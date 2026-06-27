@@ -1183,14 +1183,20 @@ function toast(msg, type='') {
 }
 
 // Auto-login se tiver token
-if (TOKEN) {
-  fetch('/api/health').then(r => {
-    if (r.ok) {
-      // tenta re-login silencioso — por ora só mostra login
-      TOKEN = ''; localStorage.removeItem('flx_token');
-    }
-  }).catch(() => {});
+async function autoLogin() {
+  if (!TOKEN) return;
+  try {
+    const opts = { method:'GET', headers:{ 'Authorization':'Bearer '+TOKEN } };
+    const r = await fetch('/api/verify-token', opts);
+    if (!r.ok) throw new Error('Token inválido');
+    const d = await r.json();
+    CU = d;
+    initApp();
+  } catch(e) {
+    TOKEN = ''; localStorage.removeItem('flx_token');
+  }
 }
+autoLogin();
 </script>
 </body>
 </html>

@@ -436,6 +436,20 @@ app.post('/api/alterar-senha', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
+/* ─── VERIFICAR TOKEN (auto-login) ─── */
+app.get('/api/verify-token', auth, async (req, res) => {
+  if (req.user.role === 'admin') {
+    return res.json({ token: '', role: 'admin', nome: 'Felipe Andrade', initials: 'FA' });
+  }
+  try {
+    const r = await pool.query('SELECT nome, empresa, plano FROM clientes WHERE id=$1 AND ativo=true', [req.user.id]);
+    if (!r.rows.length) return res.status(401).json({ erro: 'Usuário inativo' });
+    const c = r.rows[0];
+    const initials = c.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+    res.json({ token: '', role: 'gestor', nome: c.nome, empresa: c.nome, initials, plano: c.plano });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
 /* ─── CLIENTES ─── */
 app.get('/api/clientes', auth, adminOnly, async (req, res) => {
   const r = await pool.query('SELECT id,tipo,documento,nome,email,plano,valor_plano,cobranca_modo,dia_vencimento,ativo,criado_em FROM clientes ORDER BY criado_em DESC');

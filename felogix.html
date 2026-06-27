@@ -580,13 +580,36 @@ async function toggleBlock(id) {
   } catch(e) { toast(e.message,'err'); }
 }
 
-function liveMove() {
-  VEHICLES.forEach(v => {
-    if (v.status==='moving' && !v.bloqueado) {
-      v.lat += (Math.random()-.5)*.002; v.lng += (Math.random()-.5)*.002;
-      v.speed = Math.round(Math.max(20,Math.min(90,v.speed+(Math.random()-.5)*10)));
+async function liveMove() {
+  try {
+    const posicoes = await api('GET', '/api/posicoes');
+    if (Array.isArray(posicoes) && posicoes.length > 0) {
+      posicoes.forEach(pos => {
+        const v = VEHICLES.find(v => String(v.imei) === String(pos.id));
+        if (v) {
+          v.lat = pos.lat;
+          v.lng = pos.lon;
+          v.speed = pos.velocidade || 0;
+          v.status = pos.velocidade > 5 ? 'moving' : 'online';
+          v.timestamp = pos.timestamp;
+        }
+      });
+    } else {
+      VEHICLES.forEach(v => {
+        if (v.status==='moving' && !v.bloqueado) {
+          v.lat += (Math.random()-.5)*.002; v.lng += (Math.random()-.5)*.002;
+          v.speed = Math.round(Math.max(20,Math.min(90,v.speed+(Math.random()-.5)*10)));
+        }
+      });
     }
-  });
+  } catch(e) {
+    VEHICLES.forEach(v => {
+      if (v.status==='moving' && !v.bloqueado) {
+        v.lat += (Math.random()-.5)*.002; v.lng += (Math.random()-.5)*.002;
+        v.speed = Math.round(Math.max(20,Math.min(90,v.speed+(Math.random()-.5)*10)));
+      }
+    });
+  }
   syncMkrs(); updateMapList();
   if (selV) openBS(selV);
 }

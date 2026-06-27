@@ -7,6 +7,8 @@ const path       = require('path');
 const { Pool }   = require('pg');
 const jwt        = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
+const http       = require('http');
+const WebSocket  = require('ws');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -17,6 +19,13 @@ const PIX_KEY    = '54.054.345/0001-57';
 const ADMIN_EMAIL = 'felipe.sousa@felogix.com.br';
 const ADMIN_PASS  = process.env.ADMIN_PASS || '95050578.Fege';
 const LEMBRETE_EMAIL = process.env.LEMBRETE_EMAIL || 'felogix.br@gmail.com'; // destino do lembrete mensal de faturas
+
+/* ─── TRACCAR (GPS Tracking) ─── */
+const TRACCAR_HOST = process.env.TRACCAR_HOST || 'localhost';
+const TRACCAR_PORT = process.env.TRACCAR_PORT || 8082;
+const TRACCAR_URL = `http://${TRACCAR_HOST}:${TRACCAR_PORT}`;
+const TRACCAR_USER = process.env.TRACCAR_USER || 'admin';
+const TRACCAR_PASS = process.env.TRACCAR_PASS || 'admin';
 
 /* ─── BANCO ─── */
 const pool = new Pool({
@@ -95,6 +104,90 @@ async function sendMail(to, subject, html) {
     await mailer.sendMail({ from: '"Felogix" <felogix.br@gmail.com>', to, subject, html });
   } catch(e) { console.error('Email error:', e.message); }
 }
+
+/* ─── INTEGRAÇÃO COM TRACCAR ─── */
+async function traccarAPI(method, path, body = null) {
+  return new Promise((resolve, reject) => {
+    const auth = Buffer.from(`${TRACCAR_USER}:${TRACCAR_PASS}`).toString('base64');
+    const url = new URL(TRACCAR_URL + path);
+    const options = {
+      hostname: url.hostname,
+      port: url.port || 8082,
+      path: url.pathname + url.search,
+      method: method,
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 5000
+    };
+
+    const req = http.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode, data: data ? JSON.parse(data) : null });
+        } catch (e) {
+          resolve({ status: res.statusCode, data: data });
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Traccar timeout')); });
+
+    if (body) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+async function sincronizarVeiculosTraccar() {
+  try {
+    const res = await traccarAPI('GET', '/api/devices');
+    if (res.status !== 200 || !Array.isArray(res.data)) return;
+
+    for (const device of res.data) {
+      const placa = device.name?.toUpperCase() || `DEVICE-${device.id}`;
+      const existente = await pool.query(
+        'SELECT id FROM veiculos WHERE imei=$1',
+        [String(device.id)]
+      );
+
+      if (!existente.rows.length) {
+        await pool.query(
+          'INSERT INTO veiculos (cliente_id, placa, imei, modelo, ano, cor, ativo) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          [1, placa, String(device.id), 'Rastreador', 2024, 'Preto', true]
+        ).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.error('Erro sincronizando veículos Traccar:', e.message);
+  }
+}
+
+async function obterPosicoesTraccar() {
+  try {
+    const res = await traccarAPI('GET', '/api/positions');
+    if (res.status === 200 && Array.isArray(res.data)) {
+      return res.data.map(p => ({
+        id: p.deviceId,
+        lat: p.latitude,
+        lon: p.longitude,
+        velocidade: Math.round(p.speed || 0),
+        direcao: p.course || 0,
+        timestamp: p.serverTime
+      }));
+    }
+    return [];
+  } catch (e) {
+    console.error('Erro obtendo posições Traccar:', e.message);
+    return [];
+  }
+}
+
+// Sincronizar veículos a cada 5 minutos
+setInterval(sincronizarVeiculosTraccar, 5 * 60 * 1000);
 
 /* ─── FATURAMENTO ─── */
 const TRACK_VALOR_VEICULO = 29.90; // R$ por veículo/mês no plano Track
@@ -569,6 +662,41 @@ app.delete('/api/veiculos/:id', auth, adminOnly, async (req, res) => {
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
   await pool.query('DELETE FROM veiculos WHERE id=$1', [id]);
   res.json({ ok: true });
+});
+
+/* ─── POSIÇÕES (Traccar Integration) ─── */
+app.get('/api/posicoes', auth, async (req, res) => {
+  const posicoes = await obterPosicoesTraccar();
+
+  // Enriquecer com dados do banco
+  const result = [];
+  for (const pos of posicoes) {
+    const v = await pool.query('SELECT id,placa,modelo,cliente_id FROM veiculos WHERE imei=$1', [String(pos.id)]);
+    if (v.rows.length) {
+      result.push({
+        ...pos,
+        veiculo_id: v.rows[0].id,
+        placa: v.rows[0].placa,
+        modelo: v.rows[0].modelo,
+        cliente_id: v.rows[0].cliente_id
+      });
+    }
+  }
+  res.json(result);
+});
+
+app.post('/api/traccar/sync', auth, adminOnly, async (req, res) => {
+  await sincronizarVeiculosTraccar();
+  res.json({ ok: true, message: 'Veículos sincronizados com Traccar' });
+});
+
+app.get('/api/traccar/status', auth, adminOnly, async (req, res) => {
+  try {
+    const result = await traccarAPI('GET', '/api/server');
+    res.json({ conectado: result.status === 200, info: result.data });
+  } catch (e) {
+    res.status(503).json({ conectado: false, erro: e.message });
+  }
 });
 
 /* ─── ALERTAS ─── */

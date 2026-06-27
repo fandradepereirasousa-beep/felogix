@@ -16,6 +16,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'flx_' + require('crypto').randomBy
 const PIX_KEY    = '54.054.345/0001-57';
 const ADMIN_EMAIL = 'felipe.sousa@felogix.com.br';
 const ADMIN_PASS  = process.env.ADMIN_PASS || '95050578.Fege';
+const LEMBRETE_EMAIL = process.env.LEMBRETE_EMAIL || 'felogix.br@gmail.com'; // destino do lembrete mensal de faturas
 
 /* ─── BANCO ─── */
 const pool = new Pool({
@@ -244,7 +245,7 @@ async function verificarLembreteMensal(){
     const drafts = await montarRascunhos(mesRef);
     const cobr = drafts.filter(d => !d.cortesia && !d.ja_enviado && d.valor > 0);
     const total = cobr.reduce((s, d) => s + d.valor, 0);
-    await sendMail(ADMIN_EMAIL, `Felogix — faturas de ${fmtMesRef(mesRef)} prontas para revisar`,
+    await sendMail(LEMBRETE_EMAIL, `Felogix — faturas de ${fmtMesRef(mesRef)} prontas para revisar`,
       `<div style="font-family:sans-serif;max-width:500px;margin:auto">
         <h2 style="color:#D91A1A">Felogix</h2>
         <p>Olá, Felipe!</p>

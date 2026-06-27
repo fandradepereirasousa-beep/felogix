@@ -1,0 +1,32 @@
+name: Deploy para o VPS
+
+# Dispara a cada push na branch main
+on:
+  push:
+    branches: [main]
+  # Permite rodar manualmente pela aba Actions do GitHub
+  workflow_dispatch:
+
+# Evita deploys simultâneos sobrepostos; o último push cancela o anterior
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Conectar no VPS e atualizar a aplicação
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: true
+          script: |
+            cd /var/www/felogix
+            git fetch origin main
+            git reset --hard origin/main
+            pm2 restart felogix --update-env
+            pm2 save

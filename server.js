@@ -1,3 +1,6 @@
+// Carrega variáveis do .env (opcional — não quebra se o pacote não estiver instalado)
+try { require('dotenv').config(); } catch (e) { console.warn('dotenv não instalado; usando env do sistema/PM2'); }
+
 const express    = require('express');
 const cors       = require('cors');
 const path       = require('path');

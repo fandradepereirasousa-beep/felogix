@@ -1,0 +1,15 @@
+# Segredos — NUNCA versionar
+.env
+.env.local
+.env.*.local
+
+# Dependências
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+pm2.log
+
+# Sistema
+.DS_Store

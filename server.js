@@ -174,43 +174,88 @@ async function enviarCortesia(cli, mesRef) {
     </div>`);
 }
 
-/* ─── COBRANÇA AUTOMÁTICA ─── */
-// Gera e envia as faturas de um mês de referência para todos os clientes ativos.
-// Idempotente: pula quem já tem registro do mês (não duplica nem reenvia e-mail).
-async function rodarFaturamento(mesRef) {
-  const { rows: clientes } = await pool.query('SELECT * FROM clientes WHERE ativo=true');
-  let geradas = 0;
-  for (const cli of clientes) {
-    const ja = await pool.query('SELECT 1 FROM pagamentos WHERE cliente_id=$1 AND mes_ref=$2', [cli.id, mesRef]);
-    if (ja.rows.length) continue;
-    try {
-      if (cli.plano === 'cortesia') {
-        await pool.query('INSERT INTO pagamentos (cliente_id,mes_ref,valor,pago,data_pagamento) VALUES ($1,$2,0,true,NOW()) ON CONFLICT (cliente_id,mes_ref) DO NOTHING', [cli.id, mesRef]);
-        await enviarCortesia(cli, mesRef);
-        geradas++;
-        continue;
-      }
-      const f = await calcularFatura(cli, mesRef);
-      if (f.valor <= 0) continue;                        // sem valor a cobrar → ignora
-      await pool.query('INSERT INTO pagamentos (cliente_id,mes_ref,valor) VALUES ($1,$2,$3) ON CONFLICT (cliente_id,mes_ref) DO NOTHING', [cli.id, mesRef, f.valor]);
-      await enviarFatura(cli, mesRef, f.valor, f.qtd);
-      geradas++;
-    } catch (e) { console.error(`Faturamento cliente ${cli.id}:`, e.message); }
-  }
-  if (geradas) console.log(`Faturamento ${mesRef}: ${geradas} fatura(s) gerada(s)`);
-  return geradas;
+/* ─── COBRANÇA: RASCUNHOS, MODELO E LEMBRETE (sem envio automático) ─── */
+const TPL_ASSUNTO_PADRAO = 'Fatura Felogix — {mes}';
+const TPL_CORPO_PADRAO = 'Olá, {nome}!\n\nSegue sua fatura referente a {mes}, no valor de {valor}.\nO pagamento pode ser feito via PIX (chave no final do e-mail).\n\nQualquer dúvida, é só responder esta mensagem. Obrigado por confiar na Felogix! 🚗';
+
+function escapeHtml(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function aplicarVars(txt, v){
+  return String(txt == null ? '' : txt)
+    .replace(/\{nome\}/g, v.nome).replace(/\{valor\}/g, v.valor)
+    .replace(/\{mes\}/g, v.mes).replace(/\{pix\}/g, v.pix);
 }
 
-// Roda no startup e a cada 6h. Fatura o mês passado, mas só a partir do baseline
-// (mês em que o automático foi ligado) — assim o primeiro deploy não cobra retroativo.
-async function verificarFaturamentoAuto() {
+// HTML do e-mail de fatura: mensagem (editável) por cima + bloco fixo de valor e PIX.
+function montarHtmlFatura(msg, valor, cli, mesRef){
+  const planoTxt = cli.plano === 'track' ? 'Track' : cli.plano === 'personalizado' ? 'Personalizado' : cli.plano;
+  const corpo = escapeHtml(msg).replace(/\n/g, '<br>');
+  return `<div style="font-family:sans-serif;max-width:500px;margin:auto">
+      <h2 style="color:#D91A1A">Felogix Track</h2>
+      <div style="font-size:14px;color:#222;margin:8px 0 16px">${corpo}</div>
+      <table style="width:100%;border-collapse:collapse;margin:16px 0">
+        <tr style="background:#f9f9f9"><td style="padding:8px">Plano</td><td style="padding:8px"><b>${planoTxt}</b></td></tr>
+        <tr><td style="padding:8px">Referência</td><td style="padding:8px"><b>${fmtMesRef(mesRef)}</b></td></tr>
+        <tr style="background:#f9f9f9"><td style="padding:8px">Valor</td><td style="padding:8px"><b style="font-size:20px;color:#D91A1A">${fmtMoeda(valor)}</b></td></tr>
+        <tr><td style="padding:8px">Vencimento</td><td style="padding:8px"><b>Dia ${cli.dia_vencimento}</b></td></tr>
+      </table>
+      <div style="background:#0C0C0C;color:#fff;padding:16px;border-radius:8px;margin-top:16px">
+        <p style="margin:0;font-size:12px;color:#888">Chave PIX</p>
+        <p style="margin:4px 0;font-size:18px;font-weight:bold">${PIX_KEY}</p>
+        <p style="margin:0;font-size:11px;color:#555">CNPJ — Felogix</p>
+      </div>
+    </div>`;
+}
+
+// Lista de rascunhos de um mês (NÃO envia nada). Marca quem já foi enviado e e-mail inválido.
+async function montarRascunhos(mesRef){
+  const { rows: clientes } = await pool.query('SELECT * FROM clientes WHERE ativo=true ORDER BY nome');
+  const out = [];
+  for (const cli of clientes){
+    const env = await pool.query('SELECT enviado_em FROM pagamentos WHERE cliente_id=$1 AND mes_ref=$2', [cli.id, mesRef]);
+    const ja_enviado = !!(env.rows[0] && env.rows[0].enviado_em);
+    const email_ok = isEmail(cli.email || '');
+    if (cli.plano === 'cortesia'){
+      out.push({ cliente_id: cli.id, nome: cli.nome, email: cli.email, plano: 'cortesia', cobranca_modo: null, cortesia: true, valor: 0, qtd: 0, ja_enviado, email_ok });
+    } else {
+      const f = await calcularFatura(cli, mesRef);
+      out.push({ cliente_id: cli.id, nome: cli.nome, email: cli.email, plano: cli.plano, cobranca_modo: cli.cobranca_modo, cortesia: false, valor: f.valor, qtd: f.qtd, ja_enviado, email_ok });
+    }
+  }
+  return out;
+}
+
+async function registrarEmailLog(cli, mesRef, tipo, assunto, valor){
+  await pool.query(
+    'INSERT INTO emails_log (cliente_id,cliente_nome,email,mes_ref,tipo,assunto,valor) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+    [cli.id, cli.nome, cli.email, mesRef, tipo, String(assunto).slice(0,200), valor || 0]
+  );
+}
+
+// Roda no startup e a cada 6h: avisa SOMENTE o admin (uma vez por mês) que há faturas a revisar.
+// Nada é enviado aos clientes automaticamente.
+async function verificarLembreteMensal(){
   try {
-    const base = await pool.query(`SELECT valor FROM config WHERE chave='cobranca_auto_desde'`);
-    const baseline = base.rows[0]?.valor;
+    const cfg = await pool.query(`SELECT chave,valor FROM config WHERE chave IN ('cobranca_auto_desde','lembrete_mes')`);
+    const map = Object.fromEntries(cfg.rows.map(r => [r.chave, r.valor]));
+    const baseline = map['cobranca_auto_desde'];
     const mesRef = mesRefAnterior();
     if (!baseline || mesRef < baseline) return;          // ainda não chegou a hora
-    await rodarFaturamento(mesRef);
-  } catch (e) { console.error('verificarFaturamentoAuto:', e.message); }
+    if (map['lembrete_mes'] === mesRef) return;          // já avisei sobre este mês
+    const drafts = await montarRascunhos(mesRef);
+    const cobr = drafts.filter(d => !d.cortesia && !d.ja_enviado && d.valor > 0);
+    const total = cobr.reduce((s, d) => s + d.valor, 0);
+    await sendMail(ADMIN_EMAIL, `Felogix — faturas de ${fmtMesRef(mesRef)} prontas para revisar`,
+      `<div style="font-family:sans-serif;max-width:500px;margin:auto">
+        <h2 style="color:#D91A1A">Felogix</h2>
+        <p>Olá, Felipe!</p>
+        <p>As faturas de <b>${fmtMesRef(mesRef)}</b> estão prontas para revisão.</p>
+        <p><b>${cobr.length}</b> cobrança(s) a enviar, somando <b>${fmtMoeda(total)}</b>.</p>
+        <p>Acesse <a href="https://felogix.com.br">felogix.com.br</a> → <b>Financeiro › Cobranças do mês</b> para revisar, selecionar e enviar.</p>
+        <p style="font-size:11px;color:#999">Nenhum e-mail é enviado automaticamente aos clientes.</p>
+      </div>`);
+    await pool.query(`INSERT INTO config (chave,valor) VALUES ('lembrete_mes',$1) ON CONFLICT (chave) DO UPDATE SET valor=$1`, [mesRef]);
+    console.log(`Lembrete de faturamento (${mesRef}) enviado ao admin`);
+  } catch (e) { console.error('verificarLembreteMensal:', e.message); }
 }
 
 /* ─── INIT DB ─── */
@@ -281,6 +326,21 @@ async function initDB() {
   await pool.query(`CREATE TABLE IF NOT EXISTS config (chave VARCHAR(50) PRIMARY KEY, valor TEXT)`);
   // Baseline: mês em que o faturamento automático passou a valer (evita cobrança retroativa).
   await pool.query(`INSERT INTO config (chave,valor) VALUES ('cobranca_auto_desde', to_char(NOW(),'YYYY-MM')) ON CONFLICT (chave) DO NOTHING`);
+  // Faturamento por aprovação: marca de envio + histórico de e-mails + modelo padrão
+  await pool.query(`ALTER TABLE pagamentos ADD COLUMN IF NOT EXISTS enviado_em TIMESTAMP`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS emails_log (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES clientes(id) ON DELETE SET NULL,
+    cliente_nome VARCHAR(150),
+    email VARCHAR(150),
+    mes_ref VARCHAR(7),
+    tipo VARCHAR(20),
+    assunto VARCHAR(200),
+    valor DECIMAL(10,2) DEFAULT 0,
+    enviado_em TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`INSERT INTO config (chave,valor) VALUES ('tpl_assunto',$1) ON CONFLICT (chave) DO NOTHING`, [TPL_ASSUNTO_PADRAO]);
+  await pool.query(`INSERT INTO config (chave,valor) VALUES ('tpl_corpo',$1) ON CONFLICT (chave) DO NOTHING`, [TPL_CORPO_PADRAO]);
   await pool.query(`
     INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
     VALUES ('cnpj','54.024.215/0001-00','Impacto Segurança','frota@grupoimpacto.com.br','Frota@123','track',true)
@@ -567,6 +627,71 @@ app.post('/api/financeiro/pago', auth, adminOnly, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Rascunhos do mês para revisão (não envia nada) + modelo de e-mail salvo
+app.get('/api/financeiro/rascunhos', auth, adminOnly, async (req, res) => {
+  const mesRef = (typeof req.query.mes === 'string' && /^\d{4}-\d{2}$/.test(req.query.mes)) ? req.query.mes : mesRefAnterior();
+  try {
+    const clientes = await montarRascunhos(mesRef);
+    const cfg = await pool.query(`SELECT chave,valor FROM config WHERE chave IN ('tpl_assunto','tpl_corpo')`);
+    const map = Object.fromEntries(cfg.rows.map(r => [r.chave, r.valor]));
+    res.json({
+      mes_ref: mesRef,
+      pix: PIX_KEY,
+      template: { assunto: map.tpl_assunto || TPL_ASSUNTO_PADRAO, corpo: map.tpl_corpo || TPL_CORPO_PADRAO },
+      clientes
+    });
+  } catch (err) { console.error(err); res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+// Envia o lote selecionado (e só ele). Salva o modelo para reuso e registra no histórico.
+app.post('/api/financeiro/enviar', auth, adminOnly, async (req, res) => {
+  const mesRef = (typeof req.body.mes_ref === 'string' && /^\d{4}-\d{2}$/.test(req.body.mes_ref)) ? req.body.mes_ref : mesRefAnterior();
+  const itens = Array.isArray(req.body.itens) ? req.body.itens : [];
+  const tpl = (req.body.template && typeof req.body.template === 'object') ? req.body.template : {};
+  if (!itens.length) return res.status(400).json({ erro: 'Nenhum cliente selecionado' });
+  try {
+    if (typeof tpl.assunto === 'string' && tpl.assunto.length <= 200)
+      await pool.query(`INSERT INTO config (chave,valor) VALUES ('tpl_assunto',$1) ON CONFLICT (chave) DO UPDATE SET valor=$1`, [tpl.assunto]);
+    if (typeof tpl.corpo === 'string' && tpl.corpo.length <= 4000)
+      await pool.query(`INSERT INTO config (chave,valor) VALUES ('tpl_corpo',$1) ON CONFLICT (chave) DO UPDATE SET valor=$1`, [tpl.corpo]);
+
+    let enviados = 0; const falhas = [];
+    for (const it of itens) {
+      const cid = parseInt(it.cliente_id);
+      try {
+        const c = await pool.query('SELECT * FROM clientes WHERE id=$1 AND ativo=true', [cid]);
+        if (!c.rows.length) { falhas.push({ cliente_id: cid, motivo: 'cliente não encontrado' }); continue; }
+        const cli = c.rows[0];
+        if (!isEmail(cli.email || '')) { falhas.push({ cliente_id: cid, nome: cli.nome, motivo: 'e-mail inválido' }); continue; }
+
+        if (cli.plano === 'cortesia') {
+          await enviarCortesia(cli, mesRef);
+          await pool.query('INSERT INTO pagamentos (cliente_id,mes_ref,valor,pago,data_pagamento,enviado_em) VALUES ($1,$2,0,true,NOW(),NOW()) ON CONFLICT (cliente_id,mes_ref) DO UPDATE SET enviado_em=NOW()', [cli.id, mesRef]);
+          await registrarEmailLog(cli, mesRef, 'cortesia', 'Felogix — obrigado por mais um mês!', 0);
+          enviados++; continue;
+        }
+
+        let valor = (it.valor !== undefined && it.valor !== null && !isNaN(parseFloat(it.valor))) ? parseFloat(it.valor) : (await calcularFatura(cli, mesRef)).valor;
+        if (valor < 0) valor = 0;
+        const vars = { nome: cli.nome, valor: fmtMoeda(valor), mes: fmtMesRef(mesRef), pix: PIX_KEY };
+        const assunto = aplicarVars(((typeof it.assunto === 'string' && it.assunto.trim()) ? it.assunto : (tpl.assunto || TPL_ASSUNTO_PADRAO)), vars).slice(0, 200);
+        const corpo   = aplicarVars(((typeof it.corpo === 'string' && it.corpo.trim()) ? it.corpo : (tpl.corpo || TPL_CORPO_PADRAO)), vars);
+        await sendMail(cli.email, assunto, montarHtmlFatura(corpo, valor, cli, mesRef));
+        await pool.query('INSERT INTO pagamentos (cliente_id,mes_ref,valor,enviado_em) VALUES ($1,$2,$3,NOW()) ON CONFLICT (cliente_id,mes_ref) DO UPDATE SET valor=$3, enviado_em=NOW()', [cli.id, mesRef, valor]);
+        await registrarEmailLog(cli, mesRef, 'fatura', assunto, valor);
+        enviados++;
+      } catch (e) { falhas.push({ cliente_id: cid, motivo: e.message }); }
+    }
+    res.json({ ok: true, enviados, falhas });
+  } catch (err) { console.error(err); res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+// Histórico de e-mails enviados
+app.get('/api/financeiro/emails', auth, adminOnly, async (req, res) => {
+  const r = await pool.query('SELECT id,cliente_nome,email,mes_ref,tipo,assunto,valor,enviado_em FROM emails_log ORDER BY enviado_em DESC LIMIT 200');
+  res.json(r.rows);
+});
+
 /* ─── HEALTH ─── */
 app.get('/api/health', (req, res) => res.json({ status: 'ok', sistema: 'Felogix', versao: '2.3' }));
 
@@ -584,6 +709,6 @@ app.use((err, req, res, next) => {
 
 initDB().then(() => {
   app.listen(PORT, '127.0.0.1', () => console.log(`Felogix v2.3 rodando na porta ${PORT}`));
-  verificarFaturamentoAuto();                                  // checa cobrança ao subir
-  setInterval(verificarFaturamentoAuto, 6 * 60 * 60 * 1000);   // e a cada 6 horas
+  verificarLembreteMensal();                                   // lembra o admin (não envia ao cliente)
+  setInterval(verificarLembreteMensal, 6 * 60 * 60 * 1000);    // e a cada 6 horas
 }).catch(err => { console.error('DB error:', err); process.exit(1); });

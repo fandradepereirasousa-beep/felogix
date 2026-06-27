@@ -936,18 +936,19 @@ async function renderFinanceiro(c) {
     const planoLabel = {cortesia:'Cortesia',track:'Track',personalizado:'Personalizado'};
     c.innerHTML = `<div class="pp">
       <div class="sec-title">Financeiro</div>
-      <div class="cfg-section" style="margin-bottom:16px">
+      <div class="cfg-section" style="margin-bottom:12px">
         <div class="cfg-title">Chave PIX</div>
         <div style="font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:600;margin-top:4px">${d.pix}</div>
         <div style="font-size:10px;color:var(--t2);margin-top:4px">CNPJ — Felogix</div>
+      </div>
+      <div class="fin-acts" style="margin-bottom:16px">
+        <div class="act-btn blue" onclick="renderCobrancas(document.getElementById('mainContent'))">🧾 Cobranças do mês</div>
+        <div class="act-btn" onclick="abrirHistoricoEmails()">📜 E-mails enviados</div>
       </div>
       ${!d.clientes.length ? `<div class="empty"><div class="ei">💰</div><div class="et">Nenhum cliente ativo</div></div>` :
         d.clientes.map(cl => {
           const ultp = cl.pagamentos?.[0];
           const est  = estimativaMensal(cl);
-          const btnCobrar = cl.plano==='cortesia'
-            ? `<div class="act-btn blue" onclick="cobrar(${cl.id})">💚 Agradecer</div>`
-            : `<div class="act-btn blue" onclick="cobrar(${cl.id})">📧 Cobrar</div>`;
           return `<div class="fin-card">
             <div class="fin-top">
               <div>
@@ -960,7 +961,6 @@ async function renderFinanceiro(c) {
             <div class="fin-info">${cobrancaLabel(cl)}</div>
             <div class="fin-info" style="margin-top:4px">${ultp?`Última fatura: ${fmtMes(ultp.mes_ref)} · ${ultp.pago?'✅ Pago':'⏳ Aguardando'}` : 'Nenhuma fatura ainda'}</div>
             <div class="fin-acts">
-              ${btnCobrar}
               <div class="act-btn" onclick="abrirHistorico(${cl.id})">📋 Histórico</div>
               ${ultp&&!ultp.pago&&parseFloat(ultp.valor)>0?`<div class="act-btn green" onclick="marcarPago(${ultp.id})">✅ Marcar pago</div>`:''}
             </div>
@@ -988,13 +988,151 @@ function abrirHistorico(id){
   openModal();
 }
 
-async function cobrar(clienteId) {
+/* ─── COBRANÇAS DO MÊS (revisar → selecionar → enviar) ─── */
+let LOTE = null;
+function escHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function shiftMes(mes, delta){ const [a,m]=mes.split('-').map(Number); const d=new Date(a,m-1+delta,1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
+function aplicarVarsJS(t, cl){
+  return String(t==null?'':t).replace(/\{nome\}/g,cl.nome).replace(/\{valor\}/g,moeda(cl._valor))
+    .replace(/\{mes\}/g,fmtMes(LOTE.mes_ref)).replace(/\{pix\}/g,LOTE.pix||'');
+}
+function capturarTemplate(){
+  const a=document.getElementById('cobAssunto'), b=document.getElementById('cobCorpo');
+  if(a) LOTE.template.assunto=a.value;
+  if(b) LOTE.template.corpo=b.value;
+}
+
+async function renderCobrancas(c, mes){
+  c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
   try {
-    const r = await api('POST','/api/financeiro/cobrar',{cliente_id:clienteId});
-    if (r.cortesia) toast('Email de cortesia enviado 💚','ok');
-    else toast(`Fatura ${fmtMes(r.mes_ref)} enviada ✅ ${moeda(r.valor)}`, 'ok');
-    renderFinanceiro(document.getElementById('mainContent'));
-  } catch(e) { toast(e.message,'err'); }
+    const d = await api('GET','/api/financeiro/rascunhos'+(mes?('?mes='+mes):''));
+    d.clientes.forEach(cl => { cl._sel = !cl.ja_enviado && cl.email_ok && (cl.cortesia || cl.valor>0); cl._valor = cl.valor; cl._assunto=null; cl._corpo=null; });
+    LOTE = d;
+    renderCobrancasUI(c);
+  } catch(e){ c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+function renderCobrancasUI(c){
+  const d = LOTE;
+  const cob = d.clientes.filter(x=>!x.cortesia);
+  const cor = d.clientes.filter(x=>x.cortesia);
+  const sel = d.clientes.filter(x=>x._sel && !x.ja_enviado);
+  const total = sel.filter(x=>!x.cortesia).reduce((s,x)=>s+(parseFloat(x._valor)||0),0);
+  c.innerHTML = `<div class="pp">
+    <div class="sec-title"><span style="cursor:pointer" onclick="goTab('financeiro')">‹ Cobranças</span></div>
+    <div class="cfg-section" style="margin-bottom:12px;display:flex;align-items:center;justify-content:space-between">
+      <div class="act-btn" onclick="renderCobrancas(document.getElementById('mainContent'),'${shiftMes(d.mes_ref,-1)}')">‹ mês</div>
+      <div style="font-weight:700;text-transform:capitalize">${fmtMes(d.mes_ref)}</div>
+      <div class="act-btn" onclick="renderCobrancas(document.getElementById('mainContent'),'${shiftMes(d.mes_ref,1)}')">mês ›</div>
+    </div>
+    <div class="cfg-section" style="margin-bottom:12px">
+      <div class="cfg-title">Modelo do e-mail (vale pra todos)</div>
+      <div class="mf"><label>Assunto</label><input id="cobAssunto" value="${(d.template.assunto||'').replace(/"/g,'&quot;')}"/></div>
+      <div class="mf"><label>Mensagem</label><textarea id="cobCorpo" rows="5" style="width:100%;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:11px 12px;font-size:13px;color:var(--t1);font-family:Inter,sans-serif;outline:none;resize:vertical">${escHtml(d.template.corpo||'')}</textarea></div>
+      <div class="cfg-sub">Variáveis: <code>{nome}</code> <code>{valor}</code> <code>{mes}</code> <code>{pix}</code> — o valor e a chave PIX já entram no rodapé automaticamente.</div>
+    </div>
+    <div class="sec-title">Cobranças <span style="color:var(--t2);font-size:11px;font-weight:400">${cob.length}</span></div>
+    ${cob.length ? cob.map(cl=>linhaCobranca(cl)).join('') : `<div class="empty"><div class="ei">💰</div><div class="et">Nenhuma cobrança neste mês</div></div>`}
+    ${cor.length ? `<div class="sec-title" style="margin-top:16px">Cortesia <span style="color:var(--t2);font-size:11px;font-weight:400">${cor.length}</span></div>${cor.map(cl=>linhaCortesia(cl)).join('')}` : ''}
+    <div class="cfg-section" style="position:sticky;bottom:8px;margin-top:16px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+        <span class="cfg-sub">${sel.length} selecionado(s)</span>
+        <span style="font-weight:700">${moeda(total)}</span>
+      </div>
+      <button class="mbtn" onclick="enviarLote()">📤 Enviar selecionados (${sel.length})</button>
+    </div>
+  </div>`;
+}
+
+function linhaCobranca(cl){
+  const i = LOTE.clientes.indexOf(cl);
+  const trava = cl.ja_enviado || !cl.email_ok;
+  const warn = cl.email_ok ? '' : `<span style="color:var(--red)"> ⚠ sem e-mail válido</span>`;
+  const editado = (cl._assunto!==null || cl._corpo!==null) ? ' ✓' : '';
+  return `<div class="card" style="${cl.ja_enviado?'opacity:.55':''}">
+    <div class="card-top">
+      <div class="toggle ${cl._sel?'on':''}" onclick="toggleSel(${i})" ${trava?'style="pointer-events:none;opacity:.4"':''}></div>
+      <div class="card-info" style="margin-left:8px">
+        <div class="card-title" style="font-family:Inter,sans-serif;font-size:14px">${cl.nome}</div>
+        <div class="card-sub">${cl.email||'—'}${warn} · ${cl.qtd} veíc.</div>
+      </div>
+      ${cl.ja_enviado?`<span class="badge badge-green">✅ enviado</span>`:''}
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
+      <span class="cfg-sub" style="white-space:nowrap">Valor R$</span>
+      <input type="number" step="0.01" value="${(parseFloat(cl._valor)||0).toFixed(2)}" onchange="setValor(${i},this.value)" ${cl.ja_enviado?'disabled':''} style="flex:1;background:var(--s2);border:1px solid var(--b1);border-radius:7px;padding:8px;color:var(--t1);font-family:'JetBrains Mono',monospace;outline:none"/>
+      <div class="act-btn" onclick="editarEmailCliente(${i})">✏️ Texto${editado}</div>
+    </div>
+  </div>`;
+}
+
+function linhaCortesia(cl){
+  const i = LOTE.clientes.indexOf(cl);
+  const trava = cl.ja_enviado || !cl.email_ok;
+  const warn = cl.email_ok ? '' : `<span style="color:var(--red)"> ⚠ sem e-mail válido</span>`;
+  return `<div class="card" style="${cl.ja_enviado?'opacity:.55':''}">
+    <div class="card-top">
+      <div class="toggle ${cl._sel?'on':''}" onclick="toggleSel(${i})" ${trava?'style="pointer-events:none;opacity:.4"':''}></div>
+      <div class="card-info" style="margin-left:8px">
+        <div class="card-title" style="font-family:Inter,sans-serif;font-size:14px">${cl.nome}</div>
+        <div class="card-sub">${cl.email||'—'}${warn} · agradecimento</div>
+      </div>
+      ${cl.ja_enviado?`<span class="badge badge-green">✅ enviado</span>`:`<span class="badge badge-gray">cortesia</span>`}
+    </div>
+  </div>`;
+}
+
+function toggleSel(i){ const cl=LOTE.clientes[i]; if(cl.ja_enviado||!cl.email_ok) return; capturarTemplate(); cl._sel=!cl._sel; renderCobrancasUI(document.getElementById('mainContent')); }
+function setValor(i,v){ capturarTemplate(); LOTE.clientes[i]._valor=parseFloat(v)||0; renderCobrancasUI(document.getElementById('mainContent')); }
+
+function editarEmailCliente(i){
+  capturarTemplate();
+  const cl=LOTE.clientes[i];
+  const assunto = cl._assunto!==null ? cl._assunto : (LOTE.template.assunto||'');
+  const corpo   = cl._corpo!==null   ? cl._corpo   : (LOTE.template.corpo||'');
+  document.getElementById('mTitle').textContent='E-mail — '+cl.nome;
+  document.getElementById('mBody').innerHTML = `
+    <div class="cfg-sub" style="margin-bottom:10px">Personalize só para este cliente, ou deixe igual ao modelo para usar o padrão.</div>
+    <div class="mf"><label>Assunto</label><input id="edAssunto" value="${assunto.replace(/"/g,'&quot;')}"/></div>
+    <div class="mf"><label>Mensagem</label><textarea id="edCorpo" rows="6" style="width:100%;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:11px 12px;font-size:13px;color:var(--t1);font-family:Inter,sans-serif;outline:none;resize:vertical">${escHtml(corpo)}</textarea></div>
+    <div class="cfg-sub" style="margin:6px 0">Prévia: <i>${escHtml(aplicarVarsJS(corpo, cl))}</i></div>
+    <button class="mbtn" onclick="salvarEmailCliente(${i})">Salvar texto deste cliente</button>
+    <button class="mbtn sec" onclick="limparEmailCliente(${i})">Usar o modelo padrão</button>`;
+  openModal();
+}
+function salvarEmailCliente(i){ const cl=LOTE.clientes[i]; cl._assunto=document.getElementById('edAssunto').value; cl._corpo=document.getElementById('edCorpo').value; closeModal(); renderCobrancasUI(document.getElementById('mainContent')); }
+function limparEmailCliente(i){ const cl=LOTE.clientes[i]; cl._assunto=null; cl._corpo=null; closeModal(); renderCobrancasUI(document.getElementById('mainContent')); }
+
+async function enviarLote(){
+  capturarTemplate();
+  const sel = LOTE.clientes.filter(x=>x._sel && !x.ja_enviado);
+  if(!sel.length) return toast('Selecione ao menos um cliente','err');
+  if(!confirm(`Enviar ${sel.length} e-mail(s) referente a ${fmtMes(LOTE.mes_ref)}?`)) return;
+  const itens = sel.map(cl => ({ cliente_id: cl.cliente_id, valor: cl._valor, assunto: cl._assunto||undefined, corpo: cl._corpo||undefined }));
+  try {
+    const r = await api('POST','/api/financeiro/enviar',{ mes_ref: LOTE.mes_ref, template: LOTE.template, itens });
+    let msg = `${r.enviados} e-mail(s) enviado(s)`;
+    if(r.falhas&&r.falhas.length) msg += ` · ${r.falhas.length} falha(s)`;
+    toast(msg, (r.falhas&&r.falhas.length)?'err':'ok');
+    renderCobrancas(document.getElementById('mainContent'), LOTE.mes_ref);
+  } catch(e){ toast(e.message,'err'); }
+}
+
+async function abrirHistoricoEmails(){
+  document.getElementById('mTitle').textContent='E-mails enviados';
+  document.getElementById('mBody').innerHTML=`<div class="loading"><div class="spinner"></div>Carregando…</div>`;
+  openModal();
+  try {
+    const logs = await api('GET','/api/financeiro/emails');
+    document.getElementById('mBody').innerHTML = logs.length ? logs.map(l => `
+      <div class="cfg-row">
+        <div>
+          <div class="cfg-label">${l.cliente_nome||l.email||'—'}</div>
+          <div class="cfg-sub">${fmtMes(l.mes_ref)} · ${l.tipo==='cortesia'?'cortesia':moeda(l.valor)} · ${new Date(l.enviado_em).toLocaleString('pt-BR')}</div>
+        </div>
+        <span class="badge ${l.tipo==='cortesia'?'badge-gray':'badge-green'}">${l.tipo}</span>
+      </div>`).join('') : `<div class="empty"><div class="ei">📭</div><div class="et">Nenhum e-mail enviado ainda</div></div>`;
+  } catch(e){ document.getElementById('mBody').innerHTML=`<div class="empty"><div class="et">${e.message}</div></div>`; }
 }
 
 async function marcarPago(pagId) {

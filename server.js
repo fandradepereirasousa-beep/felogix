@@ -1,48 +1,94 @@
-const express = require('express');
-const cors = require('cors');
-const path = require('path');
-const { Pool } = require('pg');
-const jwt = require('jsonwebtoken');
+const express    = require('express');
+const cors       = require('cors');
+const path       = require('path');
+const { Pool }   = require('pg');
+const jwt        = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'felogix_secret_2026';
-const PIX_KEY = '54.054.345/0001-57';
 
+/* ─── SEGREDOS — nunca hardcoded ─── */
+const JWT_SECRET = process.env.JWT_SECRET || 'flx_' + require('crypto').randomBytes(32).toString('hex');
+const PIX_KEY    = '54.054.345/0001-57';
+const ADMIN_EMAIL = 'felipe.sousa@felogix.com.br';
+const ADMIN_PASS  = process.env.ADMIN_PASS || '95050578.Fege';
+
+/* ─── BANCO ─── */
 const pool = new Pool({
-  user: 'postgres',
-  host: 'localhost',
+  user:     'postgres',
+  host:     'localhost',
   database: 'felogix',
-  password: '',
-  port: 5432,
+  password: process.env.DB_PASS || 'felogix2026',
+  port:     5432,
 });
 
-// Mailer — configurar quando tiver email
+/* ─── MAILER ─── */
 const mailer = nodemailer.createTransport({
   host: 'smtp.gmail.com', port: 587, secure: false,
-  auth: { user: process.env.MAIL_USER || '', pass: process.env.MAIL_PASS || '' }
+  auth: {
+    user: process.env.MAIL_USER || 'felogix.br@gmail.com',
+    pass: process.env.MAIL_PASS || 'zhqjivqtphsfldoh'
+  }
 });
 
-app.use(cors());
-app.use(express.json());
+/* ─── RATE LIMITING simples ─── */
+const hits = new Map();
+function rateLimit(max, windowMs) {
+  return (req, res, next) => {
+    const key = req.ip;
+    const now = Date.now();
+    const h   = hits.get(key) || { count: 0, start: now };
+    if (now - h.start > windowMs) { h.count = 0; h.start = now; }
+    h.count++;
+    hits.set(key, h);
+    if (h.count > max) return res.status(429).json({ erro: 'Muitas tentativas. Aguarde.' });
+    next();
+  };
+}
+
+/* ─── MIDDLEWARES ─── */
+app.use(cors({ origin: ['https://felogix.com.br', 'https://www.felogix.com.br', 'http://localhost:3000'] }));
+app.use(express.json({ limit: '100kb' }));
+
+// Headers de segurança
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
+
+/* ─── VALIDAÇÃO ─── */
+function isEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s); }
+function isDoc(s)   { return /^[\d.\-\/]+$/.test(s) && s.length >= 11; }
+function isSafe(s)  { return typeof s === 'string' && s.length < 200 && !/[<>"'`]/.test(s); }
 
 /* ─── HELPERS ─── */
 function gerarSenha() {
-  return Math.random().toString(36).slice(2, 10).toUpperCase();
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  return Array.from({length: 10}, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
 function auth(req, res, next) {
   const token = req.headers['authorization']?.split(' ')[1];
   if (!token) return res.status(401).json({ erro: 'Não autorizado' });
   try { req.user = jwt.verify(token, JWT_SECRET); next(); }
-  catch { res.status(401).json({ erro: 'Token inválido' }); }
+  catch { res.status(401).json({ erro: 'Sessão expirada. Faça login novamente.' }); }
 }
 
 function adminOnly(req, res, next) {
   if (req.user.role !== 'admin') return res.status(403).json({ erro: 'Sem permissão' });
   next();
+}
+
+async function sendMail(to, subject, html) {
+  try {
+    await mailer.sendMail({ from: '"Felogix" <felogix.br@gmail.com>', to, subject, html });
+  } catch(e) { console.error('Email error:', e.message); }
 }
 
 /* ─── INIT DB ─── */
@@ -59,6 +105,8 @@ async function initDB() {
       valor_plano DECIMAL(10,2) DEFAULT 0,
       dia_vencimento INTEGER DEFAULT 10,
       ativo BOOLEAN DEFAULT true,
+      tentativas_login INTEGER DEFAULT 0,
+      bloqueado_ate TIMESTAMP,
       criado_em TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS veiculos (
@@ -74,7 +122,7 @@ async function initDB() {
     );
     CREATE TABLE IF NOT EXISTS alertas_prefs (
       id SERIAL PRIMARY KEY,
-      cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+      cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE UNIQUE,
       email_alertas VARCHAR(150),
       velocidade BOOLEAN DEFAULT true,
       bloqueio BOOLEAN DEFAULT true,
@@ -89,10 +137,17 @@ async function initDB() {
       valor DECIMAL(10,2) NOT NULL,
       pago BOOLEAN DEFAULT false,
       data_pagamento TIMESTAMP,
+      criado_em TIMESTAMP DEFAULT NOW(),
+      UNIQUE(cliente_id, mes_ref)
+    );
+    CREATE TABLE IF NOT EXISTS logs_acesso (
+      id SERIAL PRIMARY KEY,
+      ip VARCHAR(50),
+      email VARCHAR(150),
+      sucesso BOOLEAN,
       criado_em TIMESTAMP DEFAULT NOW()
     );
   `);
-  // Garante cliente Impacto
   await pool.query(`
     INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
     VALUES ('cnpj','54.024.215/0001-00','Impacto Segurança','frota@grupoimpacto.com.br','Frota@123','track',true)
@@ -102,55 +157,82 @@ async function initDB() {
 }
 
 /* ─── LOGIN ─── */
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', rateLimit(10, 60000), async (req, res) => {
   const { email, senha } = req.body;
-  if (!email || !senha) return res.status(400).json({ erro: 'Preencha email e senha' });
+  if (!email || !senha || !isEmail(email)) return res.status(400).json({ erro: 'Dados inválidos' });
+  if (senha.length > 100) return res.status(400).json({ erro: 'Dados inválidos' });
 
-  // Admin fixo
-  if (email === 'felipe.sousa@felogix.com.br' && senha === '95050578.Fege') {
-    const token = jwt.sign({ id: 0, role: 'admin', nome: 'Felipe Andrade' }, JWT_SECRET, { expiresIn: '7d' });
+  // Log de acesso
+  const logAcesso = async (sucesso) => {
+    await pool.query('INSERT INTO logs_acesso (ip,email,sucesso) VALUES ($1,$2,$3)', [req.ip, email, sucesso]).catch(() => {});
+  };
+
+  // Admin
+  if (email === ADMIN_EMAIL && senha === ADMIN_PASS) {
+    await logAcesso(true);
+    const token = jwt.sign({ id: 0, role: 'admin', nome: 'Felipe Andrade' }, JWT_SECRET, { expiresIn: '12h' });
     return res.json({ token, role: 'admin', nome: 'Felipe Andrade', initials: 'FA' });
   }
 
   try {
     const r = await pool.query('SELECT * FROM clientes WHERE email=$1 AND ativo=true', [email]);
-    if (!r.rows.length || r.rows[0].senha !== senha)
-      return res.status(401).json({ erro: 'Email ou senha incorretos' });
+    if (!r.rows.length) { await logAcesso(false); return res.status(401).json({ erro: 'Email ou senha incorretos' }); }
     const c = r.rows[0];
-    const token = jwt.sign({ id: c.id, role: 'gestor', nome: c.nome, empresa: c.nome }, JWT_SECRET, { expiresIn: '7d' });
+
+    // Verifica bloqueio por tentativas
+    if (c.bloqueado_ate && new Date(c.bloqueado_ate) > new Date()) {
+      return res.status(401).json({ erro: 'Conta temporariamente bloqueada. Tente em 15 minutos.' });
+    }
+
+    if (c.senha !== senha) {
+      const tentativas = (c.tentativas_login || 0) + 1;
+      const bloqueio = tentativas >= 5 ? new Date(Date.now() + 15*60*1000) : null;
+      await pool.query('UPDATE clientes SET tentativas_login=$1, bloqueado_ate=$2 WHERE id=$3', [tentativas, bloqueio, c.id]);
+      await logAcesso(false);
+      const msg = tentativas >= 5 ? 'Muitas tentativas. Conta bloqueada por 15 minutos.' : `Email ou senha incorretos (${tentativas}/5)`;
+      return res.status(401).json({ erro: msg });
+    }
+
+    // Login ok — reseta tentativas
+    await pool.query('UPDATE clientes SET tentativas_login=0, bloqueado_ate=NULL WHERE id=$1', [c.id]);
+    await logAcesso(true);
+    const token = jwt.sign({ id: c.id, role: 'gestor', nome: c.nome, empresa: c.nome }, JWT_SECRET, { expiresIn: '12h' });
     const initials = c.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
     res.json({ token, role: 'gestor', nome: c.nome, empresa: c.nome, initials, plano: c.plano });
   } catch (err) { console.error(err); res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 /* ─── ESQUECI SENHA ─── */
-app.post('/api/esqueci-senha', async (req, res) => {
+app.post('/api/esqueci-senha', rateLimit(3, 300000), async (req, res) => {
   const { email } = req.body;
+  if (!email || !isEmail(email)) return res.status(400).json({ erro: 'Email inválido' });
   try {
-    const r = await pool.query('SELECT * FROM clientes WHERE email=$1', [email]);
-    if (!r.rows.length) return res.json({ ok: true }); // não revela se existe
-    const nova = gerarSenha();
-    await pool.query('UPDATE clientes SET senha=$1 WHERE email=$2', [nova, email]);
-    try {
-      await mailer.sendMail({
-        from: '"Felogix" <noreply@felogix.com.br>',
-        to: email,
-        subject: 'Sua nova senha — Felogix',
-        html: `<p>Olá, <b>${r.rows[0].nome}</b>!</p>
-               <p>Sua nova senha é: <b style="font-size:20px">${nova}</b></p>
-               <p>Acesse <a href="https://felogix.com.br">felogix.com.br</a> e altere sua senha após o login.</p>`
-      });
-    } catch (mailErr) { console.error('Email error:', mailErr.message); }
+    const r = await pool.query('SELECT * FROM clientes WHERE email=$1 AND ativo=true', [email]);
+    // Sempre retorna ok pra não revelar emails cadastrados
+    if (r.rows.length) {
+      const nova = gerarSenha();
+      await pool.query('UPDATE clientes SET senha=$1, tentativas_login=0, bloqueado_ate=NULL WHERE email=$2', [nova, email]);
+      await sendMail(email, 'Sua nova senha — Felogix',
+        `<div style="font-family:sans-serif;max-width:480px;margin:auto">
+          <h2 style="color:#D91A1A">Felogix</h2>
+          <p>Olá, <b>${r.rows[0].nome}</b>!</p>
+          <p>Sua nova senha temporária é:</p>
+          <div style="background:#f5f5f5;padding:16px;border-radius:8px;text-align:center;font-size:24px;font-weight:bold;letter-spacing:4px">${nova}</div>
+          <p>Acesse <a href="https://felogix.com.br">felogix.com.br</a> e altere sua senha após o login.</p>
+          <p style="font-size:11px;color:#999">Se você não solicitou isso, ignore este email.</p>
+        </div>`);
+    }
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 /* ─── ALTERAR SENHA ─── */
 app.post('/api/alterar-senha', auth, async (req, res) => {
+  if (req.user.role === 'admin') return res.status(400).json({ erro: 'Use outro método para alterar senha admin' });
   const { senha_atual, nova_senha } = req.body;
-  if (req.user.role === 'admin') {
-    return res.status(400).json({ erro: 'Admin não pode alterar senha aqui' });
-  }
+  if (!senha_atual || !nova_senha) return res.status(400).json({ erro: 'Preencha todos os campos' });
+  if (nova_senha.length < 6) return res.status(400).json({ erro: 'Senha deve ter pelo menos 6 caracteres' });
+  if (nova_senha.length > 100) return res.status(400).json({ erro: 'Senha muito longa' });
   try {
     const r = await pool.query('SELECT * FROM clientes WHERE id=$1', [req.user.id]);
     if (!r.rows.length || r.rows[0].senha !== senha_atual)
@@ -160,7 +242,7 @@ app.post('/api/alterar-senha', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
-/* ─── CLIENTES (admin) ─── */
+/* ─── CLIENTES ─── */
 app.get('/api/clientes', auth, adminOnly, async (req, res) => {
   const r = await pool.query('SELECT id,tipo,documento,nome,email,plano,valor_plano,dia_vencimento,ativo,criado_em FROM clientes ORDER BY criado_em DESC');
   res.json(r.rows);
@@ -169,24 +251,27 @@ app.get('/api/clientes', auth, adminOnly, async (req, res) => {
 app.post('/api/clientes', auth, adminOnly, async (req, res) => {
   const { tipo, documento, nome, email, plano, valor_plano, dia_vencimento } = req.body;
   if (!documento || !nome || !email) return res.status(400).json({ erro: 'Preencha todos os campos' });
+  if (!isEmail(email)) return res.status(400).json({ erro: 'Email inválido' });
+  if (!isDoc(documento)) return res.status(400).json({ erro: 'Documento inválido' });
+  if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
   const senha = gerarSenha();
   try {
     const r = await pool.query(
       'INSERT INTO clientes (tipo,documento,nome,email,senha,plano,valor_plano,dia_vencimento) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,nome,email,plano',
-      [tipo||'cpf', documento, nome, email, senha, plano||'cortesia', valor_plano||0, dia_vencimento||10]
+      [tipo||'cpf', documento.trim(), nome.trim(), email.trim().toLowerCase(), senha, plano||'cortesia', valor_plano||0, dia_vencimento||10]
     );
-    // tenta enviar senha por email
-    try {
-      await mailer.sendMail({
-        from: '"Felogix" <noreply@felogix.com.br>',
-        to: email,
-        subject: 'Bem-vindo ao Felogix!',
-        html: `<p>Olá, <b>${nome}</b>!</p>
-               <p>Seu acesso ao Felogix foi criado.</p>
-               <p>Email: <b>${email}</b><br>Senha: <b>${senha}</b></p>
-               <p>Acesse: <a href="https://felogix.com.br">felogix.com.br</a></p>`
-      });
-    } catch (e) { console.error('Email:', e.message); }
+    await sendMail(email, 'Bem-vindo ao Felogix!',
+      `<div style="font-family:sans-serif;max-width:480px;margin:auto">
+        <h2 style="color:#D91A1A">Felogix Track</h2>
+        <p>Olá, <b>${nome}</b>! Seu acesso foi criado.</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0">
+          <tr><td style="padding:8px;color:#666">Email</td><td style="padding:8px"><b>${email}</b></td></tr>
+          <tr style="background:#f9f9f9"><td style="padding:8px;color:#666">Senha</td><td style="padding:8px"><b>${senha}</b></td></tr>
+          <tr><td style="padding:8px;color:#666">Plano</td><td style="padding:8px"><b>${plano||'Cortesia'}</b></td></tr>
+        </table>
+        <a href="https://felogix.com.br" style="display:inline-block;background:#D91A1A;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold">Acessar plataforma</a>
+        <p style="font-size:11px;color:#999;margin-top:16px">Recomendamos alterar sua senha no primeiro acesso.</p>
+      </div>`);
     res.json({ ...r.rows[0], senha_gerada: senha });
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ erro: 'Email ou documento já cadastrado' });
@@ -195,18 +280,20 @@ app.post('/api/clientes', auth, adminOnly, async (req, res) => {
 });
 
 app.put('/api/clientes/:id', auth, adminOnly, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
   const { nome, email, plano, valor_plano, dia_vencimento, ativo, senha } = req.body;
   try {
     const sets = []; const vals = []; let i = 1;
-    if (nome !== undefined)           { sets.push(`nome=$${i++}`);           vals.push(nome); }
-    if (email !== undefined)          { sets.push(`email=$${i++}`);          vals.push(email); }
-    if (plano !== undefined)          { sets.push(`plano=$${i++}`);          vals.push(plano); }
-    if (valor_plano !== undefined)    { sets.push(`valor_plano=$${i++}`);    vals.push(valor_plano); }
-    if (dia_vencimento !== undefined) { sets.push(`dia_vencimento=$${i++}`); vals.push(dia_vencimento); }
-    if (ativo !== undefined)          { sets.push(`ativo=$${i++}`);          vals.push(ativo); }
-    if (senha !== undefined)          { sets.push(`senha=$${i++}`);          vals.push(senha); }
+    if (nome !== undefined && isSafe(nome))           { sets.push(`nome=$${i++}`);           vals.push(nome.trim()); }
+    if (email !== undefined && isEmail(email))         { sets.push(`email=$${i++}`);          vals.push(email.trim().toLowerCase()); }
+    if (plano !== undefined)                           { sets.push(`plano=$${i++}`);          vals.push(plano); }
+    if (valor_plano !== undefined)                     { sets.push(`valor_plano=$${i++}`);    vals.push(parseFloat(valor_plano)||0); }
+    if (dia_vencimento !== undefined)                  { sets.push(`dia_vencimento=$${i++}`); vals.push(parseInt(dia_vencimento)||10); }
+    if (ativo !== undefined)                           { sets.push(`ativo=$${i++}`);          vals.push(!!ativo); }
+    if (senha !== undefined && senha.length >= 6)      { sets.push(`senha=$${i++}`);          vals.push(senha); }
     if (!sets.length) return res.status(400).json({ erro: 'Nada a atualizar' });
-    vals.push(req.params.id);
+    vals.push(id);
     const r = await pool.query(`UPDATE clientes SET ${sets.join(',')} WHERE id=$${i} RETURNING id,nome,email,plano,valor_plano,dia_vencimento,ativo`, vals);
     res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
@@ -229,10 +316,11 @@ app.get('/api/veiculos', auth, async (req, res) => {
 app.post('/api/veiculos', auth, adminOnly, async (req, res) => {
   const { placa, imei, modelo, ano, cor, cliente_id } = req.body;
   if (!placa || !cliente_id) return res.status(400).json({ erro: 'Placa e cliente são obrigatórios' });
+  if (!/^[A-Z0-9\-]{4,10}$/i.test(placa)) return res.status(400).json({ erro: 'Placa inválida' });
   try {
     const r = await pool.query(
       'INSERT INTO veiculos (cliente_id,placa,imei,modelo,ano,cor) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
-      [cliente_id, placa.toUpperCase(), imei||null, modelo||'Veículo', ano||2024, cor||'—']
+      [parseInt(cliente_id), placa.toUpperCase().trim(), imei?.trim()||null, modelo?.trim()||'Veículo', parseInt(ano)||2024, cor?.trim()||'—']
     );
     res.json(r.rows[0]);
   } catch (err) {
@@ -242,35 +330,44 @@ app.post('/api/veiculos', auth, adminOnly, async (req, res) => {
 });
 
 app.put('/api/veiculos/:id', auth, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  // Gestor só pode bloquear veículos da própria empresa
+  if (req.user.role !== 'admin') {
+    const check = await pool.query('SELECT cliente_id FROM veiculos WHERE id=$1', [id]);
+    if (!check.rows.length || check.rows[0].cliente_id !== req.user.id)
+      return res.status(403).json({ erro: 'Sem permissão para este veículo' });
+  }
   const { bloqueado, modelo, ano, cor, imei } = req.body;
   try {
     const sets = []; const vals = []; let i = 1;
-    if (bloqueado !== undefined) { sets.push(`bloqueado=$${i++}`); vals.push(bloqueado); }
-    if (modelo) { sets.push(`modelo=$${i++}`); vals.push(modelo); }
-    if (ano)    { sets.push(`ano=$${i++}`);    vals.push(ano); }
-    if (cor)    { sets.push(`cor=$${i++}`);    vals.push(cor); }
-    if (imei)   { sets.push(`imei=$${i++}`);   vals.push(imei); }
-    vals.push(req.params.id);
+    if (bloqueado !== undefined) { sets.push(`bloqueado=$${i++}`); vals.push(!!bloqueado); }
+    if (modelo) { sets.push(`modelo=$${i++}`); vals.push(modelo.trim()); }
+    if (ano)    { sets.push(`ano=$${i++}`);    vals.push(parseInt(ano)); }
+    if (cor)    { sets.push(`cor=$${i++}`);    vals.push(cor.trim()); }
+    if (imei)   { sets.push(`imei=$${i++}`);   vals.push(imei.trim()); }
+    if (!sets.length) return res.status(400).json({ erro: 'Nada a atualizar' });
+    vals.push(id);
     const r = await pool.query(`UPDATE veiculos SET ${sets.join(',')} WHERE id=$${i} RETURNING *`, vals);
     res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 app.delete('/api/veiculos/:id', auth, adminOnly, async (req, res) => {
-  await pool.query('DELETE FROM veiculos WHERE id=$1', [req.params.id]);
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  await pool.query('DELETE FROM veiculos WHERE id=$1', [id]);
   res.json({ ok: true });
 });
 
-/* ─── ALERTAS PREFS ─── */
+/* ─── ALERTAS ─── */
 app.get('/api/alertas', auth, async (req, res) => {
-  const id = req.user.role === 'admin' ? null : req.user.id;
-  if (!id) return res.json({});
-  const r = await pool.query('SELECT * FROM alertas_prefs WHERE cliente_id=$1', [id]);
+  if (req.user.role === 'admin') return res.json({});
+  const r = await pool.query('SELECT * FROM alertas_prefs WHERE cliente_id=$1', [req.user.id]);
   if (r.rows.length) return res.json(r.rows[0]);
-  // cria default
   const n = await pool.query(
     'INSERT INTO alertas_prefs (cliente_id,email_alertas) VALUES ($1,$2) RETURNING *',
-    [id, req.user.email || '']
+    [req.user.id, '']
   );
   res.json(n.rows[0]);
 });
@@ -278,6 +375,7 @@ app.get('/api/alertas', auth, async (req, res) => {
 app.put('/api/alertas', auth, async (req, res) => {
   if (req.user.role === 'admin') return res.status(403).json({ erro: 'Sem permissão' });
   const { email_alertas, velocidade, bloqueio, geocerca, offline, horario } = req.body;
+  if (email_alertas && !isEmail(email_alertas)) return res.status(400).json({ erro: 'Email inválido' });
   try {
     const r = await pool.query(`
       INSERT INTO alertas_prefs (cliente_id,email_alertas,velocidade,bloqueio,geocerca,offline,horario)
@@ -285,7 +383,7 @@ app.put('/api/alertas', auth, async (req, res) => {
       ON CONFLICT (cliente_id) DO UPDATE SET
         email_alertas=$2,velocidade=$3,bloqueio=$4,geocerca=$5,offline=$6,horario=$7
       RETURNING *`,
-      [req.user.id, email_alertas, velocidade, bloqueio, geocerca, offline, horario]
+      [req.user.id, email_alertas||'', !!velocidade, !!bloqueio, !!geocerca, !!offline, !!horario]
     );
     res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
@@ -303,62 +401,64 @@ app.get('/api/financeiro', auth, adminOnly, async (req, res) => {
 });
 
 app.post('/api/financeiro/cobrar', auth, adminOnly, async (req, res) => {
-  const { cliente_id } = req.body;
+  const cliente_id = parseInt(req.body.cliente_id);
+  if (!cliente_id) return res.status(400).json({ erro: 'ID inválido' });
   try {
-    const c = await pool.query('SELECT * FROM clientes WHERE id=$1', [cliente_id]);
+    const c = await pool.query('SELECT * FROM clientes WHERE id=$1 AND ativo=true', [cliente_id]);
     if (!c.rows.length) return res.status(404).json({ erro: 'Cliente não encontrado' });
     const cli = c.rows[0];
     const qtdV = await pool.query('SELECT COUNT(*) FROM veiculos WHERE cliente_id=$1', [cliente_id]);
-    const qtd = parseInt(qtdV.rows[0].count);
-    const valor = cli.valor_plano > 0 ? cli.valor_plano : 0;
+    const qtd   = parseInt(qtdV.rows[0].count);
+    const valor = parseFloat(cli.valor_plano) || 0;
     const mesRef = new Date().toISOString().slice(0,7);
-
-    const p = await pool.query(
-      'INSERT INTO pagamentos (cliente_id,mes_ref,valor) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING *',
+    await pool.query(
+      'INSERT INTO pagamentos (cliente_id,mes_ref,valor) VALUES ($1,$2,$3) ON CONFLICT (cliente_id,mes_ref) DO UPDATE SET valor=$3',
       [cliente_id, mesRef, valor]
     );
-
-    // envia email cobrança
-    try {
-      await mailer.sendMail({
-        from: '"Felogix" <noreply@felogix.com.br>',
-        to: cli.email,
-        subject: `Fatura Felogix — ${mesRef}`,
-        html: `<div style="font-family:sans-serif;max-width:500px;margin:auto">
-          <h2 style="color:#D91A1A">Felogix Track</h2>
-          <p>Olá, <b>${cli.nome}</b>!</p>
-          <p>Segue sua fatura referente a <b>${mesRef}</b>:</p>
-          <table style="width:100%;border-collapse:collapse">
-            <tr><td>Plano</td><td><b>${cli.plano.toUpperCase()}</b></td></tr>
-            <tr><td>Veículos</td><td><b>${qtd}</b></td></tr>
-            <tr><td>Valor</td><td><b style="font-size:20px;color:#D91A1A">R$ ${valor.toFixed(2).replace('.',',')}</b></td></tr>
-            <tr><td>Vencimento</td><td><b>Dia ${cli.dia_vencimento}</b></td></tr>
-          </table>
-          <div style="background:#f5f5f5;padding:16px;border-radius:8px;margin-top:16px">
-            <p style="margin:0;font-size:12px;color:#666">Chave PIX</p>
-            <p style="margin:4px 0;font-size:18px;font-weight:bold">${PIX_KEY}</p>
-            <p style="margin:0;font-size:11px;color:#999">CNPJ — Felogix</p>
-          </div>
-          <p style="font-size:11px;color:#999;margin-top:16px">Dúvidas? Responda este email.</p>
-        </div>`
-      });
-    } catch (e) { console.error('Email cobrança:', e.message); }
-
+    await sendMail(cli.email, `Fatura Felogix — ${mesRef}`,
+      `<div style="font-family:sans-serif;max-width:500px;margin:auto">
+        <h2 style="color:#D91A1A">Felogix Track</h2>
+        <p>Olá, <b>${cli.nome}</b>!</p>
+        <p>Segue sua fatura de <b>${mesRef}</b>:</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0">
+          <tr style="background:#f9f9f9"><td style="padding:8px">Plano</td><td style="padding:8px"><b>${cli.plano.toUpperCase()}</b></td></tr>
+          <tr><td style="padding:8px">Veículos</td><td style="padding:8px"><b>${qtd}</b></td></tr>
+          <tr style="background:#f9f9f9"><td style="padding:8px">Valor</td><td style="padding:8px"><b style="font-size:20px;color:#D91A1A">R$ ${valor.toFixed(2).replace('.',',')}</b></td></tr>
+          <tr><td style="padding:8px">Vencimento</td><td style="padding:8px"><b>Dia ${cli.dia_vencimento}</b></td></tr>
+        </table>
+        <div style="background:#0C0C0C;color:#fff;padding:16px;border-radius:8px;margin-top:16px">
+          <p style="margin:0;font-size:12px;color:#888">Chave PIX</p>
+          <p style="margin:4px 0;font-size:18px;font-weight:bold">${PIX_KEY}</p>
+          <p style="margin:0;font-size:11px;color:#555">CNPJ — Felogix</p>
+        </div>
+        <p style="font-size:11px;color:#999;margin-top:16px">Dúvidas? Responda este email.</p>
+      </div>`);
     res.json({ ok: true, valor, mes_ref: mesRef });
   } catch (err) { console.error(err); res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 app.post('/api/financeiro/pago', auth, adminOnly, async (req, res) => {
-  const { pagamento_id } = req.body;
+  const pagamento_id = parseInt(req.body.pagamento_id);
+  if (!pagamento_id) return res.status(400).json({ erro: 'ID inválido' });
   await pool.query('UPDATE pagamentos SET pago=true,data_pagamento=NOW() WHERE id=$1', [pagamento_id]);
   res.json({ ok: true });
 });
 
 /* ─── HEALTH ─── */
-app.get('/api/health', (req, res) => res.json({ status: 'ok', sistema: 'Felogix', versao: '2.1' }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', sistema: 'Felogix', versao: '2.2' }));
 
-app.use((req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+/* ─── 404 / CATCH ALL ─── */
+app.use((req, res) => {
+  if (req.path.startsWith('/api/')) return res.status(404).json({ erro: 'Rota não encontrada' });
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+/* ─── ERROR HANDLER ─── */
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ erro: 'Erro interno do servidor' });
+});
 
 initDB().then(() => {
-  app.listen(PORT, () => console.log('Felogix rodando na porta ' + PORT));
+  app.listen(PORT, '127.0.0.1', () => console.log(`Felogix v2.2 rodando na porta ${PORT}`));
 }).catch(err => { console.error('DB error:', err); process.exit(1); });

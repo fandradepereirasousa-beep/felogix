@@ -94,6 +94,125 @@ async function sendMail(to, subject, html) {
   } catch(e) { console.error('Email error:', e.message); }
 }
 
+/* ─── FATURAMENTO ─── */
+const TRACK_VALOR_VEICULO = 29.90; // R$ por veículo/mês no plano Track
+
+const MESES = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+function fmtMoeda(v)   { return 'R$ ' + (parseFloat(v) || 0).toFixed(2).replace('.', ','); }
+function fmtMesRef(m)  { const [a, x] = m.split('-').map(Number); return `${MESES[x - 1]}/${a}`; }
+function diasNoMes(ano, mes) { return new Date(ano, mes, 0).getDate(); }              // mes 1-12
+function mesRefAnterior(base = new Date()) {                                          // 'YYYY-MM' do mês passado
+  const d = new Date(base.getFullYear(), base.getMonth() - 1, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// Calcula a fatura de um cliente para um mês de referência (YYYY-MM).
+// 1º mês de cada veículo (track/por_veiculo) ou do contrato (personalizado fixo) é
+// cobrado pró-rata pelos dias reais usados; depois disso, valor cheio.
+async function calcularFatura(cli, mesRef) {
+  if (cli.plano === 'cortesia') return { valor: 0, qtd: 0, cortesia: true };
+
+  const [ano, mes] = mesRef.split('-').map(Number);    // mes 1-12
+  const dim        = diasNoMes(ano, mes);
+  const inicioMes  = new Date(ano, mes - 1, 1);
+  const fimMes     = new Date(ano, mes - 1, dim, 23, 59, 59);
+  const round2     = (n) => Math.round(n * 100) / 100;
+
+  const fracao = (inicio) => {                          // fração do mês usada por um item
+    const d = new Date(inicio);
+    if (d <= inicioMes) return 1;                       // já existia antes → cobra cheio
+    if (d > fimMes)     return 0;                       // só começou depois → não cobra
+    return (dim - d.getDate() + 1) / dim;               // pró-rata (inclui o dia inicial)
+  };
+
+  const porVeiculo = cli.plano === 'track' || (cli.plano === 'personalizado' && cli.cobranca_modo === 'por_veiculo');
+  if (porVeiculo) {
+    const rate = cli.plano === 'track' ? TRACK_VALOR_VEICULO : (parseFloat(cli.valor_plano) || 0);
+    const { rows: veics } = await pool.query('SELECT criado_em FROM veiculos WHERE cliente_id=$1 AND criado_em<=$2', [cli.id, fimMes]);
+    let valor = 0;
+    for (const v of veics) valor += rate * fracao(v.criado_em);
+    return { valor: round2(valor), qtd: veics.length };
+  }
+
+  // Personalizado FIXO (padrão do personalizado): total fixo, pró-rata pelo início do contrato
+  const total = parseFloat(cli.valor_plano) || 0;
+  const qv = await pool.query('SELECT COUNT(*) FROM veiculos WHERE cliente_id=$1 AND criado_em<=$2', [cli.id, fimMes]);
+  return { valor: round2(total * fracao(cli.criado_em)), qtd: parseInt(qv.rows[0].count) };
+}
+
+async function enviarFatura(cli, mesRef, valor, qtd) {
+  const planoTxt = cli.plano === 'track' ? 'Track' : cli.plano === 'personalizado' ? 'Personalizado' : cli.plano;
+  await sendMail(cli.email, `Fatura Felogix — ${fmtMesRef(mesRef)}`,
+    `<div style="font-family:sans-serif;max-width:500px;margin:auto">
+      <h2 style="color:#D91A1A">Felogix Track</h2>
+      <p>Olá, <b>${cli.nome}</b>!</p>
+      <p>Segue sua fatura referente a <b>${fmtMesRef(mesRef)}</b>:</p>
+      <table style="width:100%;border-collapse:collapse;margin:16px 0">
+        <tr style="background:#f9f9f9"><td style="padding:8px">Plano</td><td style="padding:8px"><b>${planoTxt}</b></td></tr>
+        <tr><td style="padding:8px">Veículos</td><td style="padding:8px"><b>${qtd}</b></td></tr>
+        <tr style="background:#f9f9f9"><td style="padding:8px">Valor</td><td style="padding:8px"><b style="font-size:20px;color:#D91A1A">${fmtMoeda(valor)}</b></td></tr>
+        <tr><td style="padding:8px">Vencimento</td><td style="padding:8px"><b>Dia ${cli.dia_vencimento}</b></td></tr>
+      </table>
+      <div style="background:#0C0C0C;color:#fff;padding:16px;border-radius:8px;margin-top:16px">
+        <p style="margin:0;font-size:12px;color:#888">Chave PIX</p>
+        <p style="margin:4px 0;font-size:18px;font-weight:bold">${PIX_KEY}</p>
+        <p style="margin:0;font-size:11px;color:#555">CNPJ — Felogix</p>
+      </div>
+      <p style="font-size:11px;color:#999;margin-top:16px">Dúvidas? Responda este email.</p>
+    </div>`);
+}
+
+async function enviarCortesia(cli, mesRef) {
+  await sendMail(cli.email, `Felogix — obrigado por mais um mês! 💚`,
+    `<div style="font-family:sans-serif;max-width:500px;margin:auto">
+      <h2 style="color:#D91A1A">Felogix Track</h2>
+      <p>Olá, <b>${cli.nome}</b>!</p>
+      <p>Passando para agradecer por mais um mês com a Felogix em <b>${fmtMesRef(mesRef)}</b>. 🚗💨</p>
+      <p>Seu plano é <b>Cortesia</b>, então não há nada a pagar este mês — é por nossa conta!</p>
+      <p>Continue contando com a gente para acompanhar seus veículos em tempo real.</p>
+      <p style="font-size:11px;color:#999;margin-top:16px">Equipe Felogix</p>
+    </div>`);
+}
+
+/* ─── COBRANÇA AUTOMÁTICA ─── */
+// Gera e envia as faturas de um mês de referência para todos os clientes ativos.
+// Idempotente: pula quem já tem registro do mês (não duplica nem reenvia e-mail).
+async function rodarFaturamento(mesRef) {
+  const { rows: clientes } = await pool.query('SELECT * FROM clientes WHERE ativo=true');
+  let geradas = 0;
+  for (const cli of clientes) {
+    const ja = await pool.query('SELECT 1 FROM pagamentos WHERE cliente_id=$1 AND mes_ref=$2', [cli.id, mesRef]);
+    if (ja.rows.length) continue;
+    try {
+      if (cli.plano === 'cortesia') {
+        await pool.query('INSERT INTO pagamentos (cliente_id,mes_ref,valor,pago,data_pagamento) VALUES ($1,$2,0,true,NOW()) ON CONFLICT (cliente_id,mes_ref) DO NOTHING', [cli.id, mesRef]);
+        await enviarCortesia(cli, mesRef);
+        geradas++;
+        continue;
+      }
+      const f = await calcularFatura(cli, mesRef);
+      if (f.valor <= 0) continue;                        // sem valor a cobrar → ignora
+      await pool.query('INSERT INTO pagamentos (cliente_id,mes_ref,valor) VALUES ($1,$2,$3) ON CONFLICT (cliente_id,mes_ref) DO NOTHING', [cli.id, mesRef, f.valor]);
+      await enviarFatura(cli, mesRef, f.valor, f.qtd);
+      geradas++;
+    } catch (e) { console.error(`Faturamento cliente ${cli.id}:`, e.message); }
+  }
+  if (geradas) console.log(`Faturamento ${mesRef}: ${geradas} fatura(s) gerada(s)`);
+  return geradas;
+}
+
+// Roda no startup e a cada 6h. Fatura o mês passado, mas só a partir do baseline
+// (mês em que o automático foi ligado) — assim o primeiro deploy não cobra retroativo.
+async function verificarFaturamentoAuto() {
+  try {
+    const base = await pool.query(`SELECT valor FROM config WHERE chave='cobranca_auto_desde'`);
+    const baseline = base.rows[0]?.valor;
+    const mesRef = mesRefAnterior();
+    if (!baseline || mesRef < baseline) return;          // ainda não chegou a hora
+    await rodarFaturamento(mesRef);
+  } catch (e) { console.error('verificarFaturamentoAuto:', e.message); }
+}
+
 /* ─── INIT DB ─── */
 async function initDB() {
   await pool.query(`
@@ -157,6 +276,11 @@ async function initDB() {
   try {
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS pagamentos_cliente_mes_uniq ON pagamentos (cliente_id, mes_ref)`);
   } catch (e) { console.warn('Migração pagamentos (índice único):', e.message); }
+  // Migração: modo de cobrança do personalizado (fixo | por_veiculo) e tabela de config
+  await pool.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS cobranca_modo VARCHAR(20)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS config (chave VARCHAR(50) PRIMARY KEY, valor TEXT)`);
+  // Baseline: mês em que o faturamento automático passou a valer (evita cobrança retroativa).
+  await pool.query(`INSERT INTO config (chave,valor) VALUES ('cobranca_auto_desde', to_char(NOW(),'YYYY-MM')) ON CONFLICT (chave) DO NOTHING`);
   await pool.query(`
     INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
     VALUES ('cnpj','54.024.215/0001-00','Impacto Segurança','frota@grupoimpacto.com.br','Frota@123','track',true)
@@ -253,21 +377,22 @@ app.post('/api/alterar-senha', auth, async (req, res) => {
 
 /* ─── CLIENTES ─── */
 app.get('/api/clientes', auth, adminOnly, async (req, res) => {
-  const r = await pool.query('SELECT id,tipo,documento,nome,email,plano,valor_plano,dia_vencimento,ativo,criado_em FROM clientes ORDER BY criado_em DESC');
+  const r = await pool.query('SELECT id,tipo,documento,nome,email,plano,valor_plano,cobranca_modo,dia_vencimento,ativo,criado_em FROM clientes ORDER BY criado_em DESC');
   res.json(r.rows);
 });
 
 app.post('/api/clientes', auth, adminOnly, async (req, res) => {
-  const { tipo, documento, nome, email, plano, valor_plano, dia_vencimento } = req.body;
+  const { tipo, documento, nome, email, plano, valor_plano, cobranca_modo, dia_vencimento } = req.body;
   if (!documento || !nome || !email) return res.status(400).json({ erro: 'Preencha todos os campos' });
   if (!isEmail(email)) return res.status(400).json({ erro: 'Email inválido' });
   if (!isDoc(documento)) return res.status(400).json({ erro: 'Documento inválido' });
   if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
   const senha = gerarSenha();
   try {
+    const modo = plano === 'personalizado' ? (cobranca_modo === 'por_veiculo' ? 'por_veiculo' : 'fixo') : null;
     const r = await pool.query(
-      'INSERT INTO clientes (tipo,documento,nome,email,senha,plano,valor_plano,dia_vencimento) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,nome,email,plano',
-      [tipo||'cpf', documento.trim(), nome.trim(), email.trim().toLowerCase(), senha, plano||'cortesia', valor_plano||0, dia_vencimento||10]
+      'INSERT INTO clientes (tipo,documento,nome,email,senha,plano,valor_plano,cobranca_modo,dia_vencimento) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,nome,email,plano',
+      [tipo||'cpf', documento.trim(), nome.trim(), email.trim().toLowerCase(), senha, plano||'cortesia', valor_plano||0, modo, dia_vencimento||10]
     );
     await sendMail(email, 'Bem-vindo ao Felogix!',
       `<div style="font-family:sans-serif;max-width:480px;margin:auto">
@@ -291,13 +416,14 @@ app.post('/api/clientes', auth, adminOnly, async (req, res) => {
 app.put('/api/clientes/:id', auth, adminOnly, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
-  const { nome, email, plano, valor_plano, dia_vencimento, ativo, senha } = req.body;
+  const { nome, email, plano, valor_plano, cobranca_modo, dia_vencimento, ativo, senha } = req.body;
   try {
     const sets = []; const vals = []; let i = 1;
     if (nome !== undefined && isSafe(nome))           { sets.push(`nome=$${i++}`);           vals.push(nome.trim()); }
     if (email !== undefined && isEmail(email))         { sets.push(`email=$${i++}`);          vals.push(email.trim().toLowerCase()); }
     if (plano !== undefined)                           { sets.push(`plano=$${i++}`);          vals.push(plano); }
     if (valor_plano !== undefined)                     { sets.push(`valor_plano=$${i++}`);    vals.push(parseFloat(valor_plano)||0); }
+    if (cobranca_modo !== undefined)                   { sets.push(`cobranca_modo=$${i++}`);  vals.push(cobranca_modo === 'por_veiculo' ? 'por_veiculo' : (cobranca_modo === 'fixo' ? 'fixo' : null)); }
     if (dia_vencimento !== undefined)                  { sets.push(`dia_vencimento=$${i++}`); vals.push(parseInt(dia_vencimento)||10); }
     if (ativo !== undefined)                           { sets.push(`ativo=$${i++}`);          vals.push(!!ativo); }
     if (senha !== undefined && senha.length >= 6)      { sets.push(`senha=$${i++}`);          vals.push(senha); }
@@ -401,7 +527,7 @@ app.put('/api/alertas', auth, async (req, res) => {
 /* ─── FINANCEIRO ─── */
 app.get('/api/financeiro', auth, adminOnly, async (req, res) => {
   const r = await pool.query(`
-    SELECT c.id,c.nome,c.email,c.plano,c.valor_plano,c.dia_vencimento,
+    SELECT c.id,c.nome,c.email,c.plano,c.valor_plano,c.cobranca_modo,c.dia_vencimento,
       (SELECT COUNT(*) FROM veiculos WHERE cliente_id=c.id) as qtd_veiculos,
       (SELECT json_agg(p ORDER BY p.criado_em DESC) FROM pagamentos p WHERE p.cliente_id=c.id) as pagamentos
     FROM clientes c WHERE c.ativo=true ORDER BY c.nome
@@ -411,38 +537,26 @@ app.get('/api/financeiro', auth, adminOnly, async (req, res) => {
 
 app.post('/api/financeiro/cobrar', auth, adminOnly, async (req, res) => {
   const cliente_id = parseInt(req.body.cliente_id);
+  const mesRef = (typeof req.body.mes_ref === 'string' && /^\d{4}-\d{2}$/.test(req.body.mes_ref)) ? req.body.mes_ref : mesRefAnterior();
   if (!cliente_id) return res.status(400).json({ erro: 'ID inválido' });
   try {
     const c = await pool.query('SELECT * FROM clientes WHERE id=$1 AND ativo=true', [cliente_id]);
     if (!c.rows.length) return res.status(404).json({ erro: 'Cliente não encontrado' });
     const cli = c.rows[0];
-    const qtdV = await pool.query('SELECT COUNT(*) FROM veiculos WHERE cliente_id=$1', [cliente_id]);
-    const qtd   = parseInt(qtdV.rows[0].count);
-    const valor = parseFloat(cli.valor_plano) || 0;
-    const mesRef = new Date().toISOString().slice(0,7);
+
+    if (cli.plano === 'cortesia') {
+      await pool.query('INSERT INTO pagamentos (cliente_id,mes_ref,valor,pago,data_pagamento) VALUES ($1,$2,0,true,NOW()) ON CONFLICT (cliente_id,mes_ref) DO NOTHING', [cliente_id, mesRef]);
+      await enviarCortesia(cli, mesRef);
+      return res.json({ ok: true, cortesia: true, valor: 0, mes_ref: mesRef });
+    }
+
+    const f = await calcularFatura(cli, mesRef);
     await pool.query(
       'INSERT INTO pagamentos (cliente_id,mes_ref,valor) VALUES ($1,$2,$3) ON CONFLICT (cliente_id,mes_ref) DO UPDATE SET valor=$3',
-      [cliente_id, mesRef, valor]
+      [cliente_id, mesRef, f.valor]
     );
-    await sendMail(cli.email, `Fatura Felogix — ${mesRef}`,
-      `<div style="font-family:sans-serif;max-width:500px;margin:auto">
-        <h2 style="color:#D91A1A">Felogix Track</h2>
-        <p>Olá, <b>${cli.nome}</b>!</p>
-        <p>Segue sua fatura de <b>${mesRef}</b>:</p>
-        <table style="width:100%;border-collapse:collapse;margin:16px 0">
-          <tr style="background:#f9f9f9"><td style="padding:8px">Plano</td><td style="padding:8px"><b>${cli.plano.toUpperCase()}</b></td></tr>
-          <tr><td style="padding:8px">Veículos</td><td style="padding:8px"><b>${qtd}</b></td></tr>
-          <tr style="background:#f9f9f9"><td style="padding:8px">Valor</td><td style="padding:8px"><b style="font-size:20px;color:#D91A1A">R$ ${valor.toFixed(2).replace('.',',')}</b></td></tr>
-          <tr><td style="padding:8px">Vencimento</td><td style="padding:8px"><b>Dia ${cli.dia_vencimento}</b></td></tr>
-        </table>
-        <div style="background:#0C0C0C;color:#fff;padding:16px;border-radius:8px;margin-top:16px">
-          <p style="margin:0;font-size:12px;color:#888">Chave PIX</p>
-          <p style="margin:4px 0;font-size:18px;font-weight:bold">${PIX_KEY}</p>
-          <p style="margin:0;font-size:11px;color:#555">CNPJ — Felogix</p>
-        </div>
-        <p style="font-size:11px;color:#999;margin-top:16px">Dúvidas? Responda este email.</p>
-      </div>`);
-    res.json({ ok: true, valor, mes_ref: mesRef });
+    await enviarFatura(cli, mesRef, f.valor, f.qtd);
+    res.json({ ok: true, valor: f.valor, qtd: f.qtd, mes_ref: mesRef });
   } catch (err) { console.error(err); res.status(500).json({ erro: 'Erro interno' }); }
 });
 
@@ -454,7 +568,7 @@ app.post('/api/financeiro/pago', auth, adminOnly, async (req, res) => {
 });
 
 /* ─── HEALTH ─── */
-app.get('/api/health', (req, res) => res.json({ status: 'ok', sistema: 'Felogix', versao: '2.2' }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', sistema: 'Felogix', versao: '2.3' }));
 
 /* ─── 404 / CATCH ALL ─── */
 app.use((req, res) => {
@@ -469,5 +583,7 @@ app.use((err, req, res, next) => {
 });
 
 initDB().then(() => {
-  app.listen(PORT, '127.0.0.1', () => console.log(`Felogix v2.2 rodando na porta ${PORT}`));
+  app.listen(PORT, '127.0.0.1', () => console.log(`Felogix v2.3 rodando na porta ${PORT}`));
+  verificarFaturamentoAuto();                                  // checa cobrança ao subir
+  setInterval(verificarFaturamentoAuto, 6 * 60 * 60 * 1000);   // e a cada 6 horas
 }).catch(err => { console.error('DB error:', err); process.exit(1); });

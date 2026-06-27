@@ -637,24 +637,39 @@ function openAddCliente() {
         <option value="personalizado">Personalizado</option>
       </select>
     </div>
-    <div class="mf" id="mValorBox" style="display:none"><label>Valor mensal (R$)</label><input id="mValor" type="number" placeholder="0.00" step="0.01"/></div>
+    <div class="mf" id="mModoBox" style="display:none"><label>Como cobrar</label>
+      <select id="mModo" onchange="toggleModo('m')">
+        <option value="fixo">Valor fixo mensal</option>
+        <option value="por_veiculo">Valor por veículo</option>
+      </select>
+    </div>
+    <div class="mf" id="mValorBox" style="display:none"><label id="mValorLabel">Valor fixo mensal (R$)</label><input id="mValor" type="number" placeholder="0.00" step="0.01"/></div>
     <div class="mf"><label>Dia de vencimento</label><input id="mDia" type="number" value="10" min="1" max="28"/></div>
     <button class="mbtn" onclick="saveCliente()">Cadastrar cliente</button>
     <div class="msuccess" id="clienteOk"></div>`;
   openModal();
 }
 
-function toggleValor(v) {
-  document.getElementById('mValorBox').style.display = v==='personalizado'?'block':'none';
+function toggleValor(plano) {
+  const perso = plano === 'personalizado';
+  document.getElementById('mModoBox').style.display = perso ? 'block' : 'none';
+  document.getElementById('mValorBox').style.display = perso ? 'block' : 'none';
+  if (perso) toggleModo('m');
+}
+function toggleModo(p) {
+  const modo = document.getElementById(p+'Modo').value;
+  document.getElementById(p+'ValorLabel').textContent = modo === 'por_veiculo' ? 'Valor por veículo (R$)' : 'Valor fixo mensal (R$)';
 }
 
 async function saveCliente() {
+  const plano = document.getElementById('mPlano').value;
   const body = {
     tipo: document.getElementById('mTipo').value,
     documento: document.getElementById('mDoc').value.trim(),
     nome: document.getElementById('mNome').value.trim(),
     email: document.getElementById('mEmail').value.trim(),
-    plano: document.getElementById('mPlano').value,
+    plano,
+    cobranca_modo: plano === 'personalizado' ? document.getElementById('mModo').value : null,
     valor_plano: parseFloat(document.getElementById('mValor')?.value||0)||0,
     dia_vencimento: parseInt(document.getElementById('mDia').value)||10,
   };
@@ -681,21 +696,33 @@ function openEditCliente(cl) {
         <option value="personalizado" ${cl.plano==='personalizado'?'selected':''}>Personalizado</option>
       </select>
     </div>
+    <div class="mf" id="eModoBox" style="display:${cl.plano==='personalizado'?'block':'none'}"><label>Como cobrar</label>
+      <select id="eModo" onchange="toggleModo('e')">
+        <option value="fixo" ${cl.cobranca_modo!=='por_veiculo'?'selected':''}>Valor fixo mensal</option>
+        <option value="por_veiculo" ${cl.cobranca_modo==='por_veiculo'?'selected':''}>Valor por veículo</option>
+      </select>
+    </div>
     <div class="mf" id="eValorBox" style="display:${cl.plano==='personalizado'?'block':'none'}">
-      <label>Valor mensal (R$)</label><input id="eValor" type="number" value="${cl.valor_plano||0}" step="0.01"/>
+      <label id="eValorLabel">${cl.cobranca_modo==='por_veiculo'?'Valor por veículo (R$)':'Valor fixo mensal (R$)'}</label><input id="eValor" type="number" value="${cl.valor_plano||0}" step="0.01"/>
     </div>
     <div class="mf"><label>Dia de vencimento</label><input id="eDia" type="number" value="${cl.dia_vencimento||10}" min="1" max="28"/></div>
     <button class="mbtn" onclick="updateCliente(${cl.id})">Salvar alterações</button>`;
   openModal();
 }
 
-function toggleValorE(v) { document.getElementById('eValorBox').style.display = v==='personalizado'?'block':'none'; }
+function toggleValorE(plano) {
+  const perso = plano === 'personalizado';
+  document.getElementById('eModoBox').style.display = perso ? 'block' : 'none';
+  document.getElementById('eValorBox').style.display = perso ? 'block' : 'none';
+  if (perso) toggleModo('e');
+}
 
 async function updateCliente(id) {
   const body = {
     nome: document.getElementById('eNome').value.trim(),
     email: document.getElementById('eEmail').value.trim(),
     plano: document.getElementById('ePlano').value,
+    cobranca_modo: document.getElementById('ePlano').value === 'personalizado' ? document.getElementById('eModo').value : null,
     valor_plano: parseFloat(document.getElementById('eValor')?.value||0)||0,
     dia_vencimento: parseInt(document.getElementById('eDia').value)||10,
   };
@@ -881,10 +908,31 @@ async function salvarAlertas() {
 }
 
 /* ─── FINANCEIRO ─── */
+let FIN_DATA = [];
+const MESES_ABR = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+function fmtMes(m){ if(!m) return '—'; const [a,x]=m.split('-').map(Number); return MESES_ABR[x-1]+'/'+a; }
+function moeda(v){ return 'R$ '+(parseFloat(v)||0).toFixed(2).replace('.',','); }
+
+// Como o cliente é cobrado (descrição) e estimativa mensal (rate × veículos quando aplicável)
+function cobrancaLabel(cl){
+  if(cl.plano==='cortesia') return 'Cortesia · grátis';
+  if(cl.plano==='track')    return 'Track · R$ 29,90/veículo';
+  const v = moeda(cl.valor_plano);
+  return cl.cobranca_modo==='por_veiculo' ? `Personalizado · ${v}/veículo` : `Personalizado · ${v}/mês`;
+}
+function estimativaMensal(cl){
+  const q = parseInt(cl.qtd_veiculos)||0;
+  if(cl.plano==='cortesia') return 0;
+  if(cl.plano==='track')    return 29.90*q;
+  const v = parseFloat(cl.valor_plano)||0;
+  return cl.cobranca_modo==='por_veiculo' ? v*q : v;
+}
+
 async function renderFinanceiro(c) {
   c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
   try {
     const d = await api('GET','/api/financeiro');
+    FIN_DATA = d.clientes;
     const planoLabel = {cortesia:'Cortesia',track:'Track',personalizado:'Personalizado'};
     c.innerHTML = `<div class="pp">
       <div class="sec-title">Financeiro</div>
@@ -896,6 +944,10 @@ async function renderFinanceiro(c) {
       ${!d.clientes.length ? `<div class="empty"><div class="ei">💰</div><div class="et">Nenhum cliente ativo</div></div>` :
         d.clientes.map(cl => {
           const ultp = cl.pagamentos?.[0];
+          const est  = estimativaMensal(cl);
+          const btnCobrar = cl.plano==='cortesia'
+            ? `<div class="act-btn blue" onclick="cobrar(${cl.id})">💚 Agradecer</div>`
+            : `<div class="act-btn blue" onclick="cobrar(${cl.id})">📧 Cobrar</div>`;
           return `<div class="fin-card">
             <div class="fin-top">
               <div>
@@ -904,11 +956,13 @@ async function renderFinanceiro(c) {
               </div>
               <span class="badge badge-blue">${planoLabel[cl.plano]||cl.plano}</span>
             </div>
-            <div class="fin-valor">R$ ${parseFloat(cl.valor_plano||0).toFixed(2).replace('.',',')}</div>
-            <div class="fin-info" style="margin-top:4px">${ultp?`Último envio: ${ultp.mes_ref} ${ultp.pago?'✅ Pago':'⏳ Aguardando'}` : 'Nenhuma cobrança enviada'}</div>
+            <div class="fin-valor">${est>0?moeda(est):'—'}</div>
+            <div class="fin-info">${cobrancaLabel(cl)}</div>
+            <div class="fin-info" style="margin-top:4px">${ultp?`Última fatura: ${fmtMes(ultp.mes_ref)} · ${ultp.pago?'✅ Pago':'⏳ Aguardando'}` : 'Nenhuma fatura ainda'}</div>
             <div class="fin-acts">
-              <div class="act-btn blue" onclick="cobrar(${cl.id})">📧 Enviar cobrança</div>
-              ${ultp&&!ultp.pago?`<div class="act-btn green" onclick="marcarPago(${ultp.id})">✅ Marcar pago</div>`:''}
+              ${btnCobrar}
+              <div class="act-btn" onclick="abrirHistorico(${cl.id})">📋 Histórico</div>
+              ${ultp&&!ultp.pago&&parseFloat(ultp.valor)>0?`<div class="act-btn green" onclick="marcarPago(${ultp.id})">✅ Marcar pago</div>`:''}
             </div>
           </div>`;
         }).join('')}
@@ -916,10 +970,29 @@ async function renderFinanceiro(c) {
   } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
 }
 
+function abrirHistorico(id){
+  const cl = FIN_DATA.find(x => x.id===id); if(!cl) return;
+  const pags = cl.pagamentos || [];
+  document.getElementById('mTitle').textContent = 'Histórico — '+cl.nome;
+  document.getElementById('mBody').innerHTML = pags.length ? pags.map(p => `
+    <div class="cfg-row">
+      <div>
+        <div class="cfg-label">${fmtMes(p.mes_ref)}</div>
+        <div class="cfg-sub">${p.pago ? ('✅ Pago'+(p.data_pagamento?' em '+new Date(p.data_pagamento).toLocaleDateString('pt-BR'):'')) : '⏳ Aguardando'}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-family:'JetBrains Mono',monospace;font-weight:600">${moeda(p.valor)}</div>
+        ${!p.pago&&parseFloat(p.valor)>0?`<div class="act-btn green" style="margin-top:4px;padding:4px 8px" onclick="marcarPago(${p.id});closeModal()">Marcar pago</div>`:''}
+      </div>
+    </div>`).join('') : `<div class="empty"><div class="ei">🧾</div><div class="et">Nenhuma fatura ainda</div></div>`;
+  openModal();
+}
+
 async function cobrar(clienteId) {
   try {
     const r = await api('POST','/api/financeiro/cobrar',{cliente_id:clienteId});
-    toast(`Cobrança enviada ✅ R$ ${parseFloat(r.valor).toFixed(2).replace('.',',')}`, 'ok');
+    if (r.cortesia) toast('Email de cortesia enviado 💚','ok');
+    else toast(`Fatura ${fmtMes(r.mes_ref)} enviada ✅ ${moeda(r.valor)}`, 'ok');
     renderFinanceiro(document.getElementById('mainContent'));
   } catch(e) { toast(e.message,'err'); }
 }

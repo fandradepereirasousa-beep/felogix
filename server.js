@@ -151,6 +151,12 @@ async function initDB() {
       criado_em TIMESTAMP DEFAULT NOW()
     );
   `);
+  // Migração: garante a restrição única em pagamentos (tabelas antigas podem não ter,
+  // pois CREATE TABLE IF NOT EXISTS não altera tabelas já existentes). Sem isso o
+  // ON CONFLICT da cobrança falha com o erro 42P10.
+  try {
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS pagamentos_cliente_mes_uniq ON pagamentos (cliente_id, mes_ref)`);
+  } catch (e) { console.warn('Migração pagamentos (índice único):', e.message); }
   await pool.query(`
     INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
     VALUES ('cnpj','54.024.215/0001-00','Impacto Segurança','frota@grupoimpacto.com.br','Frota@123','track',true)

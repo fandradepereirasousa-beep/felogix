@@ -28,5 +28,30 @@ jobs:
             cd /var/www/felogix
             git fetch origin main
             git reset --hard origin/main
+            npm install --production
             pm2 restart felogix --update-env
             pm2 save
+
+      - name: Verificar saúde da aplicação
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: true
+          script: |
+            # Aguarda a aplicação iniciar
+            sleep 3
+
+            # Verifica se a aplicação está respondendo
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/health)
+
+            if [ "$STATUS" = "200" ]; then
+              echo "✓ Aplicação iniciou com sucesso"
+              exit 0
+            else
+              echo "✗ Health check falhou com status $STATUS"
+              pm2 logs felogix --lines 50
+              exit 1
+            fi

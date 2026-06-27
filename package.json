@@ -1,0 +1,17 @@
+{
+  "name": "felogix",
+  "version": "2.3.0",
+  "description": "Sistema de rastreamento de veículos com cobrança integrada",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "pg": "^8.10.0",
+    "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^6.9.7",
+    "dotenv": "^16.3.1"
+  }
+}

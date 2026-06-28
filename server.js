@@ -33,6 +33,13 @@ const TRACCAR_URL = `http://${TRACCAR_HOST}:${TRACCAR_PORT}`;
 const TRACCAR_USER = process.env.TRACCAR_USER || 'admin';
 const TRACCAR_PASS = process.env.TRACCAR_PASS || 'admin';
 
+/* ─── MOTOR DE ALERTAS ─── */
+const ALERTA_VELOCIDADE_LIMITE = 100; // km/h
+const ALERTA_OFFLINE_MIN = 30; // minutos sem posição nova
+const ALERTA_COOLDOWN_MS = 15 * 60 * 1000; // evita repetir o mesmo alerta a cada 5s
+const ultimoAlerta = new Map(); // `${tipo}:${veiculoId}` -> timestamp do último disparo
+const ultimaPosicaoEm = new Map(); // veiculoId -> timestamp da última posição recebida
+
 /* ─── BANCO ─── */
 const pool = new Pool({
   user:     process.env.DB_USER || 'postgres',
@@ -331,23 +338,53 @@ async function traccarAPI(method, path, body = null) {
   });
 }
 
+// Resolve o deviceId interno do Traccar a partir do IMEI físico real (device.uniqueId)
+async function resolverTraccarDeviceId(imei) {
+  if (!imei) return null;
+  try {
+    const res = await traccarAPI('GET', `/api/devices?uniqueId=${encodeURIComponent(imei)}`);
+    if (res.status === 200 && Array.isArray(res.data) && res.data.length) {
+      return res.data[0].id;
+    }
+    return null;
+  } catch (e) {
+    console.error('Erro resolvendo deviceId Traccar:', e.message);
+    return null;
+  }
+}
+
+// Envia comando real ao rastreador (bloqueio/desbloqueio de ignição) via Traccar
+async function traccarEnviarComando(deviceId, tipo) {
+  try {
+    const res = await traccarAPI('POST', '/api/commands/send', {
+      deviceId,
+      type: tipo // 'engineStop' | 'engineResume'
+    });
+    return res.status >= 200 && res.status < 300;
+  } catch (e) {
+    console.error('Erro enviando comando Traccar:', e.message);
+    return false;
+  }
+}
+
+// Apenas vincula veículos já cadastrados ao deviceId do Traccar (via IMEI real).
+// Não cria veículos novos automaticamente — evita atribuir rastreadores não
+// cadastrados a um cliente errado por padrão.
 async function sincronizarVeiculosTraccar() {
   try {
     const res = await traccarAPI('GET', '/api/devices');
     if (res.status !== 200 || !Array.isArray(res.data)) return;
 
-    for (const device of res.data) {
-      const placa = device.name?.toUpperCase() || `DEVICE-${device.id}`;
-      const existente = await pool.query(
-        'SELECT id FROM veiculos WHERE imei=$1',
-        [String(device.id)]
-      );
+    const pendentes = await pool.query(
+      `SELECT id, imei FROM veiculos WHERE imei IS NOT NULL AND imei <> '' AND traccar_device_id IS NULL`
+    );
+    if (!pendentes.rows.length) return;
 
-      if (!existente.rows.length) {
-        await pool.query(
-          'INSERT INTO veiculos (cliente_id, placa, imei, modelo, ano, cor) VALUES ($1, $2, $3, $4, $5, $6)',
-          [1, placa, String(device.id), 'Rastreador', 2024, 'Preto']
-        ).catch(() => {});
+    const porUniqueId = new Map(res.data.map(d => [String(d.uniqueId), d.id]));
+    for (const v of pendentes.rows) {
+      const deviceId = porUniqueId.get(String(v.imei));
+      if (deviceId) {
+        await pool.query('UPDATE veiculos SET traccar_device_id=$1 WHERE id=$2', [deviceId, v.id]).catch(() => {});
       }
     }
   } catch (e) {
@@ -668,6 +705,9 @@ async function initDB() {
   try {
     await pool.query(`ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS foto VARCHAR(255)`);
   } catch (e) { console.warn('Migração veiculos foto:', e.message); }
+  try {
+    await pool.query(`ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS traccar_device_id INTEGER`);
+  } catch (e) { console.warn('Migração veiculos traccar_device_id:', e.message); }
   // Colaboradores: funcionários criados pelo gestor (clientes CNPJ), com acesso
   // restrito a um grupo de veículos específico escolhido pelo gestor.
   await pool.query(`CREATE TABLE IF NOT EXISTS grupos_veiculos (
@@ -713,6 +753,17 @@ async function initDB() {
   )`);
   await pool.query(`INSERT INTO config (chave,valor) VALUES ('tpl_assunto',$1) ON CONFLICT (chave) DO NOTHING`, [TPL_ASSUNTO_PADRAO]);
   await pool.query(`INSERT INTO config (chave,valor) VALUES ('tpl_corpo',$1) ON CONFLICT (chave) DO NOTHING`, [TPL_CORPO_PADRAO]);
+  // Eventos reais detectados pelo motor de alertas (velocidade, offline, bloqueio)
+  await pool.query(`CREATE TABLE IF NOT EXISTS alertas_eventos (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+    veiculo_id INTEGER REFERENCES veiculos(id) ON DELETE CASCADE,
+    tipo VARCHAR(30),
+    mensagem TEXT,
+    lido BOOLEAN DEFAULT false,
+    criado_em TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_alertas_eventos_cliente ON alertas_eventos (cliente_id, criado_em DESC)`);
   await pool.query(`
     INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
     VALUES ('cnpj','54.024.215/0001-00','Impacto Segurança','frota@grupoimpacto.com.br','Frota@123','track',true)
@@ -962,6 +1013,14 @@ app.post('/api/veiculos', auth, adminOnly, uploadFoto, async (req, res) => {
       [parseInt(cliente_id), placa.toUpperCase().trim(), tipo==='imei'?imei?.trim():null, modelo?.trim()||'Veículo', parseInt(ano)||2024, cor?.trim()||'—', compartilhamento_id, foto]
     );
 
+    // Vincula ao deviceId do Traccar pelo IMEI real, sem bloquear a resposta
+    if (tipo === 'imei' && imei) {
+      const veiculoId = r.rows[0].id;
+      resolverTraccarDeviceId(imei.trim()).then(deviceId => {
+        if (deviceId) pool.query('UPDATE veiculos SET traccar_device_id=$1 WHERE id=$2', [deviceId, veiculoId]).catch(() => {});
+      }).catch(() => {});
+    }
+
     // Retorna com link se for teste ou permanente
     const resultado = r.rows[0];
     if (tipo !== 'imei') {
@@ -982,16 +1041,30 @@ app.put('/api/veiculos/:id', auth, uploadFoto, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
   if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
-  // Gestor só pode bloquear veículos da própria empresa
-  if (req.user.role !== 'admin') {
-    const check = await pool.query('SELECT cliente_id FROM veiculos WHERE id=$1', [id]);
-    if (!check.rows.length || check.rows[0].cliente_id !== req.user.id)
-      return res.status(403).json({ erro: 'Sem permissão para este veículo' });
-  }
+  const atual = await pool.query('SELECT cliente_id, placa, imei, traccar_device_id, bloqueado FROM veiculos WHERE id=$1', [id]);
+  if (!atual.rows.length) return res.status(404).json({ erro: 'Veículo não encontrado' });
+  const veiculo = atual.rows[0];
+  // Gestor só pode editar veículos da própria empresa
+  if (req.user.role !== 'admin' && veiculo.cliente_id !== req.user.id)
+    return res.status(403).json({ erro: 'Sem permissão para este veículo' });
+
   const { bloqueado, modelo, ano, cor, imei } = req.body;
+  let bloqueadoNovo;
+  if (bloqueado !== undefined) {
+    bloqueadoNovo = bloqueado === true || bloqueado === 'true';
+    // Rastreador real (com IMEI): exige comando real ao Traccar antes de persistir o estado
+    if (veiculo.imei && bloqueadoNovo !== veiculo.bloqueado) {
+      if (!veiculo.traccar_device_id) {
+        return res.status(409).json({ erro: 'Rastreador ainda não conectado ao Traccar — não é possível bloquear/desbloquear remotamente' });
+      }
+      const ok = await traccarEnviarComando(veiculo.traccar_device_id, bloqueadoNovo ? 'engineStop' : 'engineResume');
+      if (!ok) return res.status(502).json({ erro: 'Falha ao enviar comando ao rastreador' });
+    }
+  }
+
   try {
     const sets = []; const vals = []; let i = 1;
-    if (bloqueado !== undefined) { sets.push(`bloqueado=$${i++}`); vals.push(bloqueado === true || bloqueado === 'true'); }
+    if (bloqueado !== undefined) { sets.push(`bloqueado=$${i++}`); vals.push(bloqueadoNovo); }
     if (modelo) { sets.push(`modelo=$${i++}`); vals.push(modelo.trim()); }
     if (ano)    { sets.push(`ano=$${i++}`);    vals.push(parseInt(ano)); }
     if (cor)    { sets.push(`cor=$${i++}`);    vals.push(cor.trim()); }
@@ -1001,6 +1074,22 @@ app.put('/api/veiculos/:id', auth, uploadFoto, async (req, res) => {
     vals.push(id);
     const r = await pool.query(`UPDATE veiculos SET ${sets.join(',')} WHERE id=$${i} RETURNING *`, vals);
     res.json(r.rows[0]);
+
+    // Vínculo por IMEI (fire-and-forget, não bloqueia a resposta)
+    if (imei && imei.trim() !== veiculo.imei) {
+      resolverTraccarDeviceId(imei.trim()).then(deviceId => {
+        if (deviceId) pool.query('UPDATE veiculos SET traccar_device_id=$1 WHERE id=$2', [deviceId, id]).catch(() => {});
+      }).catch(() => {});
+    }
+
+    // Alerta in-app de bloqueio/desbloqueio (gated na preferência do cliente)
+    if (bloqueado !== undefined && bloqueadoNovo !== veiculo.bloqueado) {
+      pool.query('SELECT bloqueio FROM alertas_prefs WHERE cliente_id=$1', [veiculo.cliente_id]).then(p => {
+        if (p.rows.length && p.rows[0].bloqueio) {
+          dispararAlerta(veiculo.cliente_id, id, 'bloqueio', `${veiculo.placa}: ignição ${bloqueadoNovo ? 'bloqueada' : 'desbloqueada'}`);
+        }
+      }).catch(() => {});
+    }
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
@@ -1194,7 +1283,7 @@ async function getPosicoesEnriquecidas() {
   // Enriquecer com dados do banco
   const result = [];
   for (const pos of posicoes) {
-    const v = await pool.query('SELECT id,placa,modelo,cliente_id FROM veiculos WHERE imei=$1', [String(pos.id)]);
+    const v = await pool.query('SELECT id,placa,modelo,cliente_id FROM veiculos WHERE traccar_device_id=$1', [pos.id]);
     if (v.rows.length) {
       result.push({
         ...pos,
@@ -1208,6 +1297,60 @@ async function getPosicoesEnriquecidas() {
   return result;
 }
 
+async function dispararAlerta(clienteId, veiculoId, tipo, mensagem) {
+  const chave = `${tipo}:${veiculoId}`;
+  const agora = Date.now();
+  const ultima = ultimoAlerta.get(chave) || 0;
+  if (agora - ultima < ALERTA_COOLDOWN_MS) return;
+  ultimoAlerta.set(chave, agora);
+  try {
+    await pool.query(
+      'INSERT INTO alertas_eventos (cliente_id, veiculo_id, tipo, mensagem) VALUES ($1,$2,$3,$4)',
+      [clienteId, veiculoId, tipo, mensagem]
+    );
+  } catch (e) { console.error('Erro registrando alerta:', e.message); }
+}
+
+// Avalia velocidade e offline a partir das posições atuais do Traccar.
+// Bloqueio é avaliado em PUT /api/veiculos/:id, no momento em que o estado muda de fato.
+async function avaliarAlertas(posicoesAtuais) {
+  try {
+    const clienteIds = [...new Set(posicoesAtuais.map(p => p.cliente_id))];
+    const prefsPorCliente = new Map();
+    if (clienteIds.length) {
+      const r = await pool.query('SELECT cliente_id, velocidade, offline FROM alertas_prefs WHERE cliente_id = ANY($1)', [clienteIds]);
+      for (const row of r.rows) prefsPorCliente.set(row.cliente_id, row);
+    }
+
+    const vistosAgora = new Set();
+    for (const pos of posicoesAtuais) {
+      vistosAgora.add(pos.veiculo_id);
+      ultimaPosicaoEm.set(pos.veiculo_id, Date.now());
+      const prefs = prefsPorCliente.get(pos.cliente_id);
+      if (prefs && prefs.velocidade && pos.velocidade > ALERTA_VELOCIDADE_LIMITE) {
+        await dispararAlerta(pos.cliente_id, pos.veiculo_id, 'velocidade',
+          `${pos.placa}: velocidade de ${pos.velocidade} km/h (limite ${ALERTA_VELOCIDADE_LIMITE} km/h)`);
+      }
+    }
+
+    // Offline: veículos com traccar_device_id que não aparecem nas posições atuais
+    const comRastreador = await pool.query(
+      `SELECT id, placa, cliente_id FROM veiculos WHERE traccar_device_id IS NOT NULL`
+    );
+    const limiteMs = ALERTA_OFFLINE_MIN * 60 * 1000;
+    for (const v of comRastreador.rows) {
+      if (vistosAgora.has(v.id)) continue;
+      const prefs = prefsPorCliente.get(v.cliente_id);
+      if (!prefs || !prefs.offline) continue;
+      const desde = ultimaPosicaoEm.get(v.id);
+      if (desde && (Date.now() - desde) > limiteMs) {
+        await dispararAlerta(v.cliente_id, v.id, 'offline',
+          `${v.placa}: sem sinal por mais de ${ALERTA_OFFLINE_MIN} min`);
+      }
+    }
+  } catch (e) { console.error('Erro avaliando alertas:', e.message); }
+}
+
 app.get('/api/posicoes', auth, async (req, res) => {
   const result = await getPosicoesEnriquecidas();
   if (req.user.role === 'admin') return res.json(result);
@@ -1219,12 +1362,13 @@ app.get('/api/posicoes', auth, async (req, res) => {
   res.json(result.filter(r => r.cliente_id === req.user.id));
 });
 
-// Empurra posições via WebSocket pros clientes conectados, no mesmo ritmo do polling do Traccar
+// Empurra posições via WebSocket pros clientes conectados, no mesmo ritmo do polling do Traccar.
+// O fetch + avaliação de alertas rodam sempre, independente de haver alguém com o mapa aberto.
 async function broadcastPosicoes() {
-  if (!wsClients.size) return;
   try {
     const result = await getPosicoesEnriquecidas();
-    wsBroadcastScoped('posicoes', result, r => r.cliente_id, r => r.veiculo_id);
+    await avaliarAlertas(result);
+    if (wsClients.size) wsBroadcastScoped('posicoes', result, r => r.cliente_id, r => r.veiculo_id);
   } catch (e) { console.error('Erro no broadcast de posições:', e.message); }
 }
 setInterval(broadcastPosicoes, 5000);
@@ -1232,7 +1376,7 @@ setInterval(broadcastPosicoes, 5000);
 app.get('/api/veiculos/:id/historico', auth, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
-  const v = await pool.query('SELECT cliente_id, imei FROM veiculos WHERE id=$1', [id]);
+  const v = await pool.query('SELECT cliente_id, traccar_device_id FROM veiculos WHERE id=$1', [id]);
   if (!v.rows.length) return res.status(404).json({ erro: 'Veículo não encontrado' });
   if (req.user.role === 'colaborador') {
     const g = await pool.query('SELECT 1 FROM grupo_veiculos_itens WHERE grupo_id=$1 AND veiculo_id=$2', [req.user.grupoId, id]);
@@ -1240,11 +1384,11 @@ app.get('/api/veiculos/:id/historico', auth, async (req, res) => {
   } else if (req.user.role !== 'admin' && v.rows[0].cliente_id !== req.user.id) {
     return res.status(403).json({ erro: 'Sem permissão para este veículo' });
   }
-  if (!v.rows[0].imei) return res.json([]);
+  if (!v.rows[0].traccar_device_id) return res.json([]);
   try {
     const to = new Date();
     const from = new Date(Date.now() - 24*60*60*1000);
-    const result = await traccarAPI('GET', `/api/reports/route?deviceId=${encodeURIComponent(v.rows[0].imei)}&from=${from.toISOString()}&to=${to.toISOString()}`);
+    const result = await traccarAPI('GET', `/api/reports/route?deviceId=${v.rows[0].traccar_device_id}&from=${from.toISOString()}&to=${to.toISOString()}`);
     if (result.status !== 200 || !Array.isArray(result.data)) return res.json([]);
     res.json(result.data.map(p => ({ lat: p.latitude, lng: p.longitude, velocidade: Math.round(p.speed||0), timestamp: p.fixTime || p.serverTime })));
   } catch (e) { res.json([]); }
@@ -1530,6 +1674,17 @@ app.put('/api/alertas', auth, async (req, res) => {
     );
     res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.get('/api/alertas/eventos', auth, async (req, res) => {
+  if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.json([]);
+  const r = await pool.query(
+    `SELECT e.id, e.tipo, e.mensagem, e.lido, e.criado_em, v.placa
+     FROM alertas_eventos e LEFT JOIN veiculos v ON v.id = e.veiculo_id
+     WHERE e.cliente_id=$1 ORDER BY e.criado_em DESC LIMIT 50`,
+    [req.user.id]
+  );
+  res.json(r.rows);
 });
 
 /* ─── FINANCEIRO ─── */

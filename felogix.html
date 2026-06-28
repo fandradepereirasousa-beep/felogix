@@ -1299,7 +1299,7 @@ async function renderAlertas(c) {
   c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
   if (CU.role==='admin') { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">🔔</div><div class="et">Alertas são configurados por cliente</div></div></div>`; return; }
   try {
-    const prefs = await api('GET','/api/alertas');
+    const [prefs, eventos] = await Promise.all([api('GET','/api/alertas'), api('GET','/api/alertas/eventos')]);
     const ALERTAS = [
       {k:'velocidade',ic:'⚡',nome:'Excesso de velocidade',desc:'Quando ultrapassar o limite'},
       {k:'bloqueio',  ic:'🔒',nome:'Bloqueio / Desbloqueio',desc:'Quando a ignição for bloqueada'},
@@ -1307,6 +1307,7 @@ async function renderAlertas(c) {
       {k:'offline',   ic:'📵',nome:'Veículo offline',        desc:'Sem sinal por mais de 30 min'},
       {k:'horario',   ic:'🔑',nome:'Ignição fora do horário',desc:'Ligou fora do turno configurado'},
     ];
+    const ICONES_EVENTO = { velocidade:'⚡', bloqueio:'🔒', offline:'📵' };
     c.innerHTML = `<div class="pp">
       <div class="sec-title">Alertas por email</div>
       <div class="cfg-section" style="margin-bottom:12px">
@@ -1325,6 +1326,18 @@ async function renderAlertas(c) {
           </div>
         </div>`).join('')}
       <button class="add-btn" style="width:100%;padding:12px;border-radius:8px;font-size:13px;margin-top:4px" onclick="salvarAlertas()">Salvar preferências</button>
+      <div class="sec-title" style="margin-top:20px">Últimos alertas</div>
+      ${!eventos.length ? `<div class="es" style="padding:10px 0">Nenhum alerta registrado ainda</div>` :
+        eventos.map(e => `
+          <div class="card" style="background:var(--s2);margin-bottom:6px">
+            <div class="card-top">
+              <span style="font-size:18px">${ICONES_EVENTO[e.tipo]||'🔔'}</span>
+              <div class="card-info">
+                <div class="card-title" style="font-size:13px">${e.mensagem}</div>
+                <div class="card-sub" style="font-size:10px">${new Date(e.criado_em).toLocaleString('pt-BR')}</div>
+              </div>
+            </div>
+          </div>`).join('')}
     </div>`;
   } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
 }

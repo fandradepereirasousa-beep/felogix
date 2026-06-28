@@ -55,3 +55,9 @@ jobs:
             echo "--- onde está instalado o traccar nativo (somente leitura) ---"
             ls -la /opt/traccar/conf/traccar.xml 2>/dev/null || echo "(não encontrado em /opt/traccar)"
             command -v systemctl &> /dev/null && systemctl is-active traccar 2>/dev/null || echo "(sem serviço systemd 'traccar' ou systemctl indisponível)"
+
+            echo "--- entradas de protocolo/porta em traccar.xml (filtrando qualquer linha com senha/secret/token, nunca expõe credenciais) ---"
+            grep -iE 'gt06|\.port|protocol' /opt/traccar/conf/traccar.xml 2>/dev/null | grep -ivE 'password|secret|token|credential' || echo "(sem entradas de protocolo/porta em traccar.xml — só o que vier do default)"
+
+            echo "--- entradas de protocolo/porta em default.xml, se existir (mesmo filtro) ---"
+            grep -iE 'gt06|\.port|protocol' /opt/traccar/conf/default.xml 2>/dev/null | grep -ivE 'password|secret|token|credential' || echo "(default.xml não encontrado ou sem entradas de protocolo/porta)"

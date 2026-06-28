@@ -409,6 +409,20 @@ async function initDB() {
       sucesso BOOLEAN,
       criado_em TIMESTAMP DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS rastreadores_compartilhados (
+      id SERIAL PRIMARY KEY,
+      cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+      token VARCHAR(50) UNIQUE NOT NULL,
+      nome VARCHAR(100),
+      latitude DECIMAL(10,8),
+      longitude DECIMAL(11,8),
+      precisao DECIMAL(10,2),
+      velocidade DECIMAL(10,2),
+      direcao DECIMAL(10,2),
+      ativo BOOLEAN DEFAULT true,
+      ultimo_update TIMESTAMP,
+      criado_em TIMESTAMP DEFAULT NOW()
+    );
   `);
   // Migração: garante a restrição única em pagamentos (tabelas antigas podem não ter,
   // pois CREATE TABLE IF NOT EXISTS não altera tabelas já existentes). Sem isso o
@@ -702,6 +716,45 @@ app.get('/api/traccar/status', auth, adminOnly, async (req, res) => {
   }
 });
 
+/* ─── COMPARTILHAMENTO DE LOCALIZAÇÃO (Mobile/Demo) ─── */
+app.post('/api/compartilhamentos', auth, adminOnly, async (req, res) => {
+  const { nome, cliente_id } = req.body;
+  if (!nome || !cliente_id) return res.status(400).json({ erro: 'Nome e cliente obrigatórios' });
+  try {
+    const token = require('crypto').randomBytes(24).toString('hex');
+    const r = await pool.query(
+      'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, ativo) VALUES ($1, $2, $3, true) RETURNING *',
+      [parseInt(cliente_id), token, nome.trim()]
+    );
+    res.json({ ...r.rows[0], link: `${process.env.BASE_URL || 'https://felogix.com.br'}/track/${token}` });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.get('/api/compartilhamentos', auth, adminOnly, async (req, res) => {
+  const r = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE ativo=true ORDER BY criado_em DESC');
+  res.json(r.rows);
+});
+
+app.post('/api/compartilhamentos/:token/location', async (req, res) => {
+  const { latitude, longitude, precisao, velocidade, direcao } = req.body;
+  if (!latitude || !longitude) return res.status(400).json({ erro: 'Localização inválida' });
+  try {
+    const r = await pool.query(
+      'UPDATE rastreadores_compartilhados SET latitude=$1, longitude=$2, precisao=$3, velocidade=$4, direcao=$5, ultimo_update=NOW() WHERE token=$6 AND ativo=true RETURNING *',
+      [parseFloat(latitude), parseFloat(longitude), parseFloat(precisao)||0, parseFloat(velocidade)||0, parseFloat(direcao)||0, req.params.token]
+    );
+    if (!r.rows.length) return res.status(404).json({ erro: 'Token não encontrado' });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.delete('/api/compartilhamentos/:id', auth, adminOnly, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  await pool.query('UPDATE rastreadores_compartilhados SET ativo=false WHERE id=$1', [id]);
+  res.json({ ok: true });
+});
+
 /* ─── ALERTAS ─── */
 app.get('/api/alertas', auth, async (req, res) => {
   if (req.user.role === 'admin') return res.json({});
@@ -837,6 +890,133 @@ app.post('/api/financeiro/enviar', auth, adminOnly, async (req, res) => {
 app.get('/api/financeiro/emails', auth, adminOnly, async (req, res) => {
   const r = await pool.query('SELECT id,cliente_nome,email,mes_ref,tipo,assunto,valor,enviado_em FROM emails_log ORDER BY enviado_em DESC LIMIT 200');
   res.json(r.rows);
+});
+
+/* ─── PÁGINA DE TRACKING (compartilhamento) ─── */
+app.get('/track/:token', async (req, res) => {
+  const r = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+  if (!r.rows.length) return res.status(404).send('Link expirado ou inválido');
+  const rastreador = r.rows[0];
+  res.send(`<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rastreador Felogix - ${rastreador.nome}</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #f5f5f5; }
+    .container { max-width: 100%; height: 100vh; display: flex; flex-direction: column; }
+    #map { flex: 1; }
+    .toolbar { background: #2196F3; color: white; padding: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+    .toolbar h3 { margin: 0 0 10px 0; font-size: 18px; }
+    .status { display: flex; gap: 15px; flex-wrap: wrap; font-size: 14px; }
+    .status-item { display: flex; align-items: center; gap: 5px; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; }
+    .dot.online { background: #4CAF50; }
+    .dot.offline { background: #999; }
+    button { background: #1976D2; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+    button:hover { background: #1565C0; }
+    .info { background: white; padding: 10px 15px; border-radius: 4px; margin-top: 10px; font-size: 13px; }
+    .info span { display: block; margin: 3px 0; }
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3); border-top: 2px solid white; border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="toolbar">
+      <h3>🚗 ${rastreador.nome}</h3>
+      <div class="status">
+        <div class="status-item">
+          <div class="dot online" id="statusDot"></div>
+          <span id="statusTxt">Ativando GPS...</span>
+        </div>
+        <button id="btnStart">▶ Começar Rastreamento</button>
+      </div>
+      <div class="info">
+        <span id="accuracyTxt">Precisão: --</span>
+        <span id="speedTxt">Velocidade: --</span>
+        <span id="timeTxt">Hora: --</span>
+      </div>
+    </div>
+    <div id="map"></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script>
+    const TOKEN = '${req.params.token}';
+    const map = L.map('map').setView([-15.8267, -47.8822], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap',
+      maxZoom: 19
+    }).addTo(map);
+
+    let marker = null, watching = false, watchId = null;
+
+    function updateMap(lat, lon) {
+      if (!marker) {
+        marker = L.circleMarker([lat, lon], {
+          radius: 8,
+          fillColor: '#2196F3',
+          color: 'white',
+          weight: 2,
+          opacity: 1,
+          fillOpacity: 0.8
+        }).addTo(map);
+        map.setView([lat, lon], 15);
+      } else {
+        marker.setLatLng([lat, lon]);
+      }
+    }
+
+    function startTracking() {
+      if (!navigator.geolocation) return alert('GPS não disponível');
+      watching = true;
+      document.getElementById('btnStart').textContent = '⏹ Parar';
+      document.getElementById('statusDot').className = 'dot online';
+      document.getElementById('statusTxt').textContent = 'Rastreando (em tempo real)...';
+
+      watchId = navigator.geolocation.watchPosition(
+        pos => {
+          const lat = pos.coords.latitude;
+          const lon = pos.coords.longitude;
+          const acc = pos.coords.accuracy;
+          const spd = pos.coords.speed;
+
+          updateMap(lat, lon);
+          document.getElementById('accuracyTxt').textContent = 'Precisão: ' + Math.round(acc) + 'm';
+          document.getElementById('speedTxt').textContent = 'Velocidade: ' + (spd ? (spd*3.6).toFixed(1) : '--') + ' km/h';
+          document.getElementById('timeTxt').textContent = 'Hora: ' + new Date().toLocaleTimeString('pt-BR');
+
+          fetch(\`/api/compartilhamentos/\${TOKEN}/location\`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ latitude: lat, longitude: lon, precisao: acc, velocidade: spd || 0, direcao: pos.coords.heading || 0 })
+          }).catch(e => console.error('Erro enviando localização:', e));
+        },
+        err => {
+          document.getElementById('statusTxt').textContent = '❌ ' + (err.message || 'Erro ao acessar GPS');
+          document.getElementById('statusDot').className = 'dot offline';
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    }
+
+    function stopTracking() {
+      watching = false;
+      if (watchId) navigator.geolocation.clearWatch(watchId);
+      document.getElementById('btnStart').textContent = '▶ Começar Rastreamento';
+      document.getElementById('statusDot').className = 'dot offline';
+      document.getElementById('statusTxt').textContent = 'Parado';
+    }
+
+    document.getElementById('btnStart').onclick = () => watching ? stopTracking() : startTracking();
+    startTracking();
+  </script>
+</body>
+</html>`);
 });
 
 /* ─── HEALTH ─── */

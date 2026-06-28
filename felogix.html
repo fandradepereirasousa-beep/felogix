@@ -311,7 +311,7 @@ const API = '';
 let TOKEN = localStorage.getItem('flx_token') || '';
 let CU = null;
 let map = null, markers = {}, selV = null, mapSbOpen = false, currentTab = '';
-let VEHICLES = [], liveTimer = null;
+let VEHICLES = [], COMPARTILHAMENTOS = [], liveTimer = null;
 
 /* ─── API ─── */
 async function api(method, path, body) {
@@ -402,6 +402,7 @@ function buildNav() {
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
     {ic:'👥',lbl:'Clientes',id:'clientes'},
     {ic:'🚗',lbl:'Veículos',id:'veiculos'},
+    {ic:'📱',lbl:'Demo',id:'compartilhamentos'},
     {ic:'💰',lbl:'Financeiro',id:'financeiro'},
   ];
   const gestorTabs = [
@@ -426,6 +427,7 @@ function goTab(id, el) {
     mapa:       () => renderMapa(c),
     clientes:   () => renderClientes(c),
     veiculos:   () => renderVeiculos(c),
+    compartilhamentos: () => renderCompartilhamentos(c),
     financeiro: () => renderFinanceiro(c),
     alertas:    () => renderAlertas(c),
   };
@@ -473,11 +475,12 @@ async function loadVehicles() {
 
 function updateMapList() {
   const el = document.getElementById('mapList'); if (!el) return;
-  if (!VEHICLES.length) { el.innerHTML = `<div class="empty"><div class="ei">🚗</div><div class="et">Nenhum veículo</div><div class="es">Cadastre veículos na aba Veículos</div></div>`; return; }
+  const allItems = VEHICLES.length + COMPARTILHAMENTOS.length;
+  if (!allItems) { el.innerHTML = `<div class="empty"><div class="ei">🚗</div><div class="et">Nenhum veículo</div><div class="es">Cadastre veículos na aba Veículos</div></div>`; return; }
   document.getElementById('sbOnline').textContent  = VEHICLES.filter(v => v.status !== 'offline').length;
   document.getElementById('sbMoving').textContent  = VEHICLES.filter(v => v.status === 'moving').length;
   document.getElementById('sbStopped').textContent = VEHICLES.filter(v => v.status === 'stopped').length;
-  el.innerHTML = VEHICLES.map(v => {
+  const vehiclesHtml = VEHICLES.map(v => {
     const dotC = v.bloqueado ? 'blocked' : v.status;
     return `<div class="vmc${selV===v.id?' sel':''}" onclick="openBS(${v.id})">
       <div class="vmc-r1"><div class="sdot ${dotC}"></div><div class="vmc-plate">${v.placa}</div>
@@ -485,6 +488,13 @@ function updateMapList() {
       <div style="font-size:10px;color:var(--t2)">${v.speed>0?v.speed+' km/h':'—'}</div></div>
     </div>`;
   }).join('');
+  const compsHtml = COMPARTILHAMENTOS.filter(c => c.latitude && c.longitude).map(c => {
+    const dotC = c.ultimo_update && new Date(c.ultimo_update) > new Date(Date.now()-60000) ? 'moving' : 'offline';
+    return `<div class="vmc" style="background:rgba(255,152,0,.1)">
+      <div class="vmc-r1"><div class="sdot ${dotC}"></div><div style="flex:1"><div class="vmc-plate" style="font-size:11px">📱 ${c.nome}</div><div style="font-size:9px;color:var(--t2)">${c.latitude?.toFixed(4)} ${c.longitude?.toFixed(4)}</div></div></div>
+    </div>`;
+  }).join('');
+  el.innerHTML = vehiclesHtml + compsHtml;
 }
 
 function filterMapList(q) {
@@ -522,6 +532,19 @@ function addMkr(v) {
 function syncMkrs() {
   VEHICLES.forEach(v => {
     if (markers[v.id]) { markers[v.id].setLatLng([v.lat,v.lng]); markers[v.id].setIcon(mkIcon(v)); }
+  });
+  COMPARTILHAMENTOS.forEach(c => {
+    const mkid = 'comp_'+c.id;
+    if (c.latitude && c.longitude) {
+      if (markers[mkid]) {
+        markers[mkid].setLatLng([c.latitude,c.longitude]);
+      } else {
+        const mkr = L.circleMarker([c.latitude,c.longitude], {radius:6, fillColor:'#FF9800', color:'white', weight:2, opacity:1, fillOpacity:0.8});
+        mkr.bindPopup(`<div style="font-size:12px"><strong>${c.nome}</strong><br>📱 Compartilhamento ativo</div>`);
+        mkr.addTo(map);
+        markers[mkid] = mkr;
+      }
+    }
   });
 }
 
@@ -610,6 +633,10 @@ async function liveMove() {
       }
     });
   }
+  try {
+    const comps = await api('GET', '/api/compartilhamentos');
+    COMPARTILHAMENTOS = comps.map(c => ({ ...c, tipo: 'compartilhamento' }));
+  } catch(e) {}
   syncMkrs(); updateMapList();
   if (selV) openBS(selV);
 }
@@ -949,6 +976,82 @@ function estimativaMensal(cl){
   if(cl.plano==='track')    return 29.90*q;
   const v = parseFloat(cl.valor_plano)||0;
   return cl.cobranca_modo==='por_veiculo' ? v*q : v;
+}
+
+/* ─── COMPARTILHAMENTOS (Demo / Location Sharing) ─── */
+async function renderCompartilhamentos(c) {
+  c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
+  try {
+    const comps = await api('GET','/api/compartilhamentos');
+    c.innerHTML = `<div class="pp">
+      <div class="sec-title">Demo com Localização de Celular <span style="color:var(--t2);font-size:11px;font-weight:400">${comps.length}</span><button class="add-btn" onclick="openAddCompartilhamento()">＋ Nova Demo</button></div>
+      ${!comps.length ? `<div class="empty"><div class="ei">📱</div><div class="et">Nenhuma demo ativa</div><div class="es">Crie uma nova demo para compartilhar com seus clientes</div></div>` :
+        comps.map(comp => {
+          const link = window.location.origin + '/track/' + comp.token;
+          const statusColor = comp.ultimo_update && new Date(comp.ultimo_update) > new Date(Date.now()-60000) ? 'online' : 'offline';
+          const statusTxt = statusColor === 'online' ? '🟢 Ativo agora' : '⚪ Inativo';
+          return `<div class="card">
+            <div class="card-top">
+              <div class="card-info">
+                <div class="card-title">${comp.nome}</div>
+                <div class="card-sub" style="font-family:'JetBrains Mono',monospace;font-size:11px;word-break:break-all">${link}</div>
+              </div>
+              <span class="badge badge-${statusColor}">${statusTxt}</span>
+            </div>
+            <div class="kpis-row">
+              <div class="kpi-box"><div class="v" style="font-size:12px">${comp.latitude?comp.latitude.toFixed(4):'—'}</div><div class="l">Lat</div></div>
+              <div class="kpi-box"><div class="v" style="font-size:12px">${comp.longitude?comp.longitude.toFixed(4):'—'}</div><div class="l">Lng</div></div>
+              <div class="kpi-box"><div class="v" style="font-size:11px;color:var(--t2)">${comp.ultimo_update?new Date(comp.ultimo_update).toLocaleTimeString('pt-BR'):'—'}</div><div class="l">Hora</div></div>
+            </div>
+            <div class="acts-row">
+              <div class="act-btn blue" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>
+              <div class="act-btn red" onclick="if(confirm('Remover esta demo?'))deleteCompartilhamento(${comp.id})">🗑 Remover</div>
+            </div>
+          </div>`;
+        }).join('')}
+    </div>`;
+  } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+async function openAddCompartilhamento() {
+  let clientes = [];
+  try { clientes = await api('GET','/api/clientes'); } catch(e){}
+  document.getElementById('mTitle').textContent = 'Nova Demo com Localização';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Nome da Demo</label><input id="compNome" placeholder="Ex: Demo Felipe Sousa"/></div>
+    <div class="mf"><label>Cliente</label>
+      <select id="compCliente">
+        ${clientes.map(cl=>`<option value="${cl.id}">${cl.nome}</option>`).join('')}
+      </select>
+    </div>
+    <div style="font-size:12px;color:var(--t2);margin:12px 0;padding:12px;background:var(--s2);border-radius:8px">
+      📱 Um link será gerado para o cliente abrir no celular. Ele vai pedir permissão de GPS e enviar a localização em tempo real no mapa.
+    </div>
+    <button class="mbtn" onclick="saveCompartilhamento()">Criar Demo</button>`;
+  openModal();
+}
+
+async function saveCompartilhamento() {
+  const nome = document.getElementById('compNome').value.trim();
+  const cliente_id = parseInt(document.getElementById('compCliente').value);
+  if (!nome) return toast('Nome é obrigatório','err');
+  try {
+    await api('POST','/api/compartilhamentos',{nome,cliente_id});
+    closeModal(); toast(`Demo "${nome}" criada ✅`,'ok');
+    renderCompartilhamentos(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function deleteCompartilhamento(id) {
+  try {
+    await api('DELETE',`/api/compartilhamentos/${id}`);
+    toast('Demo removida','ok');
+    renderCompartilhamentos(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+function copyToClipboard(text) {
+  navigator.clipboard.writeText(text).then(() => toast('Link copiado! 📋','ok')).catch(() => toast('Erro ao copiar','err'));
 }
 
 async function renderFinanceiro(c) {

@@ -491,7 +491,7 @@ function updateMapList() {
   const compsHtml = COMPARTILHAMENTOS.filter(c => c.latitude && c.longitude).map(c => {
     const dotC = c.ultimo_update && new Date(c.ultimo_update) > new Date(Date.now()-60000) ? 'moving' : 'offline';
     return `<div class="vmc" style="background:rgba(255,152,0,.1)">
-      <div class="vmc-r1"><div class="sdot ${dotC}"></div><div style="flex:1"><div class="vmc-plate" style="font-size:11px">📱 ${c.nome}</div><div style="font-size:9px;color:var(--t2)">${parseFloat(c.latitude).toFixed(4)} ${parseFloat(c.longitude).toFixed(4)}</div></div></div>
+      <div class="vmc-r1"><div class="sdot ${dotC}"></div><div style="flex:1"><div class="vmc-plate" style="font-size:11px">📱 ${c.nome}</div><div style="font-size:9px;color:var(--t2)">${c.latitude?.toFixed(4)} ${c.longitude?.toFixed(4)}</div></div></div>
     </div>`;
   }).join('');
   el.innerHTML = vehiclesHtml + compsHtml;
@@ -1084,8 +1084,8 @@ async function renderCompartilhamentos(c) {
               <span class="badge badge-${statusColor}">${statusTxt}</span>
             </div>
             <div class="kpis-row">
-              <div class="kpi-box"><div class="v" style="font-size:12px">${comp.latitude?parseFloat(comp.latitude).toFixed(4):'—'}</div><div class="l">Lat</div></div>
-              <div class="kpi-box"><div class="v" style="font-size:12px">${comp.longitude?parseFloat(comp.longitude).toFixed(4):'—'}</div><div class="l">Lng</div></div>
+              <div class="kpi-box"><div class="v" style="font-size:12px">${comp.latitude?comp.latitude.toFixed(4):'—'}</div><div class="l">Lat</div></div>
+              <div class="kpi-box"><div class="v" style="font-size:12px">${comp.longitude?comp.longitude.toFixed(4):'—'}</div><div class="l">Lng</div></div>
               <div class="kpi-box"><div class="v" style="font-size:11px;color:var(--t2)">${comp.ultimo_update?new Date(comp.ultimo_update).toLocaleTimeString('pt-BR'):'—'}</div><div class="l">Hora</div></div>
             </div>
             <div class="acts-row">

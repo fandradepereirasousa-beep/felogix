@@ -29,7 +29,7 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             npm install --production
-            pm2 restart felogix --update-env
+            pm2 restart felogix-server --update-env
             pm2 save
 
       - name: Verificar saúde da aplicação
@@ -52,6 +52,6 @@ jobs:
               exit 0
             else
               echo "✗ Health check falhou com status $STATUS"
-              pm2 logs felogix --lines 50
+              pm2 logs felogix-server --lines 50
               exit 1
             fi

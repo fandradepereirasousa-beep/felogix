@@ -29,7 +29,7 @@ const TRACCAR_PASS = process.env.TRACCAR_PASS || 'admin';
 
 /* ─── BANCO ─── */
 const pool = new Pool({
-  user:     'felogix',
+  user:     process.env.DB_USER || 'postgres',
   host:     'localhost',
   database: 'felogix',
   password: process.env.DB_PASS || 'felogix2026',

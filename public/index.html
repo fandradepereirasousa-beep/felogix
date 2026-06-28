@@ -467,13 +467,11 @@ function buildNav() {
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
     {ic:'👥',lbl:'Clientes',id:'clientes'},
     {ic:'🚗',lbl:'Veículos',id:'veiculos'},
-    {ic:'📱',lbl:'Celulares',id:'compartilhamentos'},
     {ic:'💰',lbl:'Financeiro',id:'financeiro'},
   ];
   const gestorTabs = [
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
     {ic:'🚗',lbl:'Veículos',id:'veiculos'},
-    {ic:'📱',lbl:'Celulares',id:'compartilhamentos'},
     {ic:'🔔',lbl:'Alertas',id:'alertas'},
   ];
   const tabs = CU.role === 'admin' ? adminTabs : gestorTabs;
@@ -550,10 +548,6 @@ async function loadVehicles() {
       ignition: false, updated: 'offline'
     }));
     if (map) { if (clusterGroup) clusterGroup.clearLayers(); Object.values(markers).forEach(m => map.removeLayer(m)); markers = {}; VEHICLES.forEach(v => addMkr(v)); }
-    try {
-      const comps = await api('GET', '/api/compartilhamentos');
-      COMPARTILHAMENTOS = comps.map(c => ({ ...c, tipo: 'compartilhamento' }));
-    } catch(e) {}
     syncMkrs();
     if (map) centerAll();
     updateMapList();
@@ -897,11 +891,6 @@ async function liveMove() {
       applyPosicoes([]);
     }
   }
-  try {
-    const comps = await api('GET', '/api/compartilhamentos');
-    COMPARTILHAMENTOS = comps.map(c => ({ ...c, tipo: 'compartilhamento' }));
-    syncMkrs(); updateMapList();
-  } catch(e) {}
 }
 
 function connectWS() {
@@ -913,7 +902,6 @@ function connectWS() {
     try {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'posicoes') applyPosicoes(msg.data);
-      else if (msg.type === 'compartilhamento') msg.data.forEach(applyCompartilhamento);
     } catch(e) {}
   };
   liveWS.onclose = () => { liveWS = null; if (TOKEN) wsReconnectTimer = setTimeout(connectWS, 4000); };

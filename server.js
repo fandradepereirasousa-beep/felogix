@@ -106,6 +106,95 @@ app.use((req, res, next) => {
   next();
 });
 
+/* ─── PÁGINA SELETORA (felogix.com.br) ─── */
+function paginaSeletora() {
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0C0C0C"/>
+  <title>Felogix</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 72 72'%3E%3Crect width='72' height='72' fill='%230C0C0C'/%3E%3Cpolygon points='4,4 20,4 68,68 52,68' fill='%23D91A1A'/%3E%3Cpolygon points='52,4 68,4 20,68 4,68' fill='%23D91A1A'/%3E%3Cpolygon points='36,28 44,36 36,44 28,36' fill='%230C0C0C'/%3E%3C/svg%3E"/>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:'Segoe UI',Arial,sans-serif; background:#0C0C0C; color:#fff; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:32px 16px; }
+    .logo { width:56px; height:56px; margin-bottom:18px; }
+    h1 { font-size:22px; font-weight:600; margin-bottom:6px; letter-spacing:.3px; }
+    .sub { color:#9a9a9a; font-size:14px; margin-bottom:36px; text-align:center; }
+    .grid { display:flex; flex-wrap:wrap; gap:18px; justify-content:center; max-width:900px; width:100%; }
+    .card { background:#171717; border:1px solid #262626; border-radius:14px; padding:26px 22px; width:240px; text-decoration:none; color:#fff; transition:border-color .15s,transform .15s; }
+    a.card:hover { border-color:#D91A1A; transform:translateY(-2px); }
+    .card.disabled { opacity:.55; cursor:default; }
+    .card-ic { font-size:32px; margin-bottom:14px; }
+    .card-t { font-size:17px; font-weight:600; margin-bottom:6px; }
+    .card-d { font-size:13px; color:#9a9a9a; line-height:1.4; }
+    .badge { display:inline-block; margin-top:12px; font-size:11px; padding:3px 9px; border-radius:20px; background:#2a2a2a; color:#9a9a9a; }
+    .badge.live { background:#1b3a1f; color:#5ed16a; }
+    footer { margin-top:48px; color:#666; font-size:12px; }
+  </style>
+</head>
+<body>
+  <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0C0C0C" rx="14"/><polygon points="4,4 20,4 68,68 52,68" fill="#D91A1A"/><polygon points="52,4 68,4 20,68 4,68" fill="#D91A1A"/><polygon points="36,28 44,36 36,44 28,36" fill="#0C0C0C"/></svg>
+  <h1>Felogix</h1>
+  <div class="sub">Escolha a plataforma</div>
+  <div class="grid">
+    <a class="card" href="/track">
+      <div class="card-ic">🚗</div>
+      <div class="card-t">Felogix Track</div>
+      <div class="card-d">Rastreamento veicular e de equipamentos em tempo real.</div>
+      <span class="badge live">Disponível</span>
+    </a>
+    <div class="card disabled">
+      <div class="card-ic">🚚</div>
+      <div class="card-t">Felogix Fleet</div>
+      <div class="card-d">Gestão de frotas para empresas.</div>
+      <span class="badge">Em construção</span>
+    </div>
+    <div class="card disabled">
+      <div class="card-ic">📍</div>
+      <div class="card-t">Felogix Connect</div>
+      <div class="card-d">Compartilhamento de localização entre família, amigos e equipes.</div>
+      <span class="badge">Em construção</span>
+    </div>
+  </div>
+  <footer>Felogix © ${new Date().getFullYear()}</footer>
+</body>
+</html>`;
+}
+
+function paginaEmConstrucao(nome, desc) {
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0C0C0C"/>
+  <title>${nome} - Felogix</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 72 72'%3E%3Crect width='72' height='72' fill='%230C0C0C'/%3E%3Cpolygon points='4,4 20,4 68,68 52,68' fill='%23D91A1A'/%3E%3Cpolygon points='52,4 68,4 20,68 4,68' fill='%23D91A1A'/%3E%3Cpolygon points='36,28 44,36 36,44 28,36' fill='%230C0C0C'/%3E%3C/svg%3E"/>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:'Segoe UI',Arial,sans-serif; background:#0C0C0C; color:#fff; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:32px 16px; text-align:center; }
+    .ic { font-size:48px; margin-bottom:18px; }
+    h1 { font-size:22px; font-weight:600; margin-bottom:8px; }
+    p { color:#9a9a9a; font-size:14px; max-width:340px; line-height:1.5; margin-bottom:28px; }
+    a { color:#fff; background:#D91A1A; text-decoration:none; padding:10px 22px; border-radius:8px; font-size:14px; font-weight:600; }
+  </style>
+</head>
+<body>
+  <div class="ic">🚧</div>
+  <h1>${nome}</h1>
+  <p>${desc} Estamos construindo essa plataforma. Em breve novidades.</p>
+  <a href="/">← Voltar</a>
+</body>
+</html>`;
+}
+
+app.get('/', (req, res) => res.send(paginaSeletora()));
+app.get('/track', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/fleet', (req, res) => res.send(paginaEmConstrucao('Felogix Fleet', 'Gestão completa de frotas para empresas.')));
+app.get('/connect', (req, res) => res.send(paginaEmConstrucao('Felogix Connect', 'Compartilhamento de localização entre família, amigos e equipes.')));
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 /* ─── VALIDAÇÃO ─── */

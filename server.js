@@ -156,8 +156,8 @@ async function sincronizarVeiculosTraccar() {
 
       if (!existente.rows.length) {
         await pool.query(
-          'INSERT INTO veiculos (cliente_id, placa, imei, modelo, ano, cor, ativo) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-          [1, placa, String(device.id), 'Rastreador', 2024, 'Preto', true]
+          'INSERT INTO veiculos (cliente_id, placa, imei, modelo, ano, cor) VALUES ($1, $2, $3, $4, $5, $6)',
+          [1, placa, String(device.id), 'Rastreador', 2024, 'Preto']
         ).catch(() => {});
       }
     }

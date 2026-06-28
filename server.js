@@ -29,7 +29,7 @@ const TRACCAR_PASS = process.env.TRACCAR_PASS || 'admin';
 
 /* ─── BANCO ─── */
 const pool = new Pool({
-  user:     'postgres',
+  user:     'felogix',
   host:     'localhost',
   database: 'felogix',
   password: process.env.DB_PASS || 'felogix2026',
@@ -384,7 +384,7 @@ async function initDB() {
       ano INTEGER,
       cor VARCHAR(50),
       bloqueado BOOLEAN DEFAULT false,
-      compartilhamento_id INTEGER REFERENCES rastreadores_compartilhados(id) ON DELETE SET NULL,
+      compartilhamento_id INTEGER,
       criado_em TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS alertas_prefs (

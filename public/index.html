@@ -1,0 +1,1413 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="theme-color" content="#0C0C0C"/>
+<title>Felogix Track</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap');
+:root{
+  --bg:#0C0C0C;--s1:#141414;--s2:#1a1a1a;--s3:#202020;
+  --b1:#2a2a2a;--b2:#333;
+  --red:#D91A1A;--green:#10b981;--amber:#f59e0b;--blue:#3b82f6;
+  --t1:#f0f0f0;--t2:#888;--t3:#444;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:var(--bg);color:var(--t1);}
+.screen{position:fixed;inset:0;display:none;flex-direction:column;background:var(--bg);z-index:10;}
+.screen.active{display:flex;}
+
+/* LOGIN */
+#ls{align-items:center;justify-content:center;}
+#ls::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 50% 20%,rgba(217,26,26,.12) 0%,transparent 60%);pointer-events:none;}
+.lw{width:100%;max-width:380px;padding:24px;}
+.logo-area{display:flex;flex-direction:column;align-items:center;margin-bottom:32px;}
+.logo-wordmark{font-size:32px;font-weight:900;letter-spacing:-1px;}
+.logo-wordmark span{color:var(--red);}
+.logo-plan{font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:var(--t3);margin-top:4px;}
+.lcard{background:var(--s1);border:1px solid var(--b1);border-radius:16px;padding:24px;}
+.ltitle{font-size:15px;font-weight:700;margin-bottom:2px;}
+.lsub{font-size:11px;color:var(--t2);margin-bottom:20px;}
+.lf{margin-bottom:12px;}
+.lf label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--t2);display:block;margin-bottom:5px;}
+.lf input{width:100%;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:12px 14px;font-size:14px;color:var(--t1);font-family:'Inter',sans-serif;outline:none;transition:border-color .2s;}
+.lf input:focus{border-color:var(--red);}
+.lbtn{width:100%;padding:13px;background:var(--red);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;margin-top:4px;transition:opacity .2s;}
+.lbtn:hover{opacity:.88;}
+.lerr{font-size:11px;color:var(--red);text-align:center;margin-top:8px;min-height:14px;}
+.lforgot{font-size:11px;color:var(--t2);text-align:center;margin-top:12px;cursor:pointer;text-decoration:underline;}
+.lforgot:hover{color:var(--t1);}
+
+/* TOPBAR */
+.topbar{height:52px;background:rgba(12,12,12,.97);border-bottom:1px solid var(--b1);display:flex;align-items:center;padding:0 14px;gap:10px;flex-shrink:0;backdrop-filter:blur(12px);z-index:200;position:relative;}
+.tb-logo{display:flex;align-items:center;gap:8px;}
+.tb-wordmark{font-size:16px;font-weight:900;letter-spacing:-.5px;}
+.tb-wordmark span{color:var(--red);}
+.tb-plan{font-size:9px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--red);background:rgba(217,26,26,.1);border:1px solid rgba(217,26,26,.25);border-radius:4px;padding:2px 6px;}
+.tb-sep{flex:1;}
+.live-chip{display:flex;align-items:center;gap:5px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--green);padding:4px 9px;background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.2);border-radius:5px;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:.3;}}
+.live-dot{width:5px;height:5px;border-radius:50%;background:var(--green);animation:blink 1.4s infinite;}
+.tb-icon{width:32px;height:32px;background:var(--s1);border:1px solid var(--b1);border-radius:7px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;transition:all .2s;position:relative;}
+.tb-icon:hover{border-color:var(--red);}
+.tb-ndot{position:absolute;top:5px;right:5px;width:6px;height:6px;background:var(--red);border-radius:50%;}
+.tb-av{width:32px;height:32px;background:var(--red);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;cursor:pointer;flex-shrink:0;}
+.role-badge{font-size:9px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;padding:3px 7px;border-radius:4px;}
+.rb-admin{background:rgba(217,26,26,.15);color:var(--red);border:1px solid rgba(217,26,26,.3);}
+.rb-gestor{background:rgba(59,130,246,.12);color:var(--blue);border:1px solid rgba(59,130,246,.25);}
+.av-menu{position:absolute;top:56px;right:10px;background:var(--s1);border:1px solid var(--b1);border-radius:10px;padding:6px;z-index:500;display:none;min-width:200px;box-shadow:0 8px 24px rgba(0,0,0,.5);}
+.av-menu.open{display:block;}
+.av-mi{padding:9px 12px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer;transition:background .15s;}
+.av-mi:hover{background:var(--s2);}
+.av-mi.muted{color:var(--t2);font-size:11px;cursor:default;}
+.av-mi.muted:hover{background:transparent;}
+.av-divider{height:1px;background:var(--b1);margin:4px 0;}
+.av-mi.danger{color:var(--red);}
+
+/* BOTTOM NAV */
+.bnav{height:60px;background:rgba(12,12,12,.97);border-top:1px solid var(--b1);display:flex;flex-shrink:0;padding-bottom:env(safe-area-inset-bottom);}
+.bni{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;cursor:pointer;color:var(--t3);font-size:8px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;transition:color .15s;padding:6px 2px;}
+.bni.on{color:var(--red);}
+.bni .ic{font-size:20px;}
+.bni-dot{width:4px;height:4px;border-radius:50%;background:var(--red);display:none;}
+.bni.on .bni-dot{display:block;}
+
+/* CONTENT */
+.content{flex:1;overflow-y:auto;overflow-x:hidden;}
+.content::-webkit-scrollbar{width:3px;}
+.content::-webkit-scrollbar-thumb{background:var(--b1);}
+.pp{padding:14px;}
+
+/* MAP */
+#mapWrap{width:100%;height:100%;position:relative;}
+#map{width:100%;height:100%;}
+.leaflet-tile-pane{filter:brightness(.75) saturate(.5) contrast(1.1);}
+.leaflet-container{background:var(--bg);}
+.leaflet-control-zoom,.leaflet-control-attribution{display:none!important;}
+.map-sb{position:absolute;top:0;left:0;bottom:0;width:260px;background:rgba(12,12,12,.97);border-right:1px solid var(--b1);backdrop-filter:blur(12px);z-index:100;transform:translateX(-100%);transition:transform .28s ease;display:flex;flex-direction:column;}
+.map-sb.open{transform:translateX(0);}
+.msb-head{padding:10px 12px;border-bottom:1px solid var(--b1);}
+.msb-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px;}
+.msb-s{background:var(--s2);border:1px solid var(--b1);border-radius:7px;padding:6px;text-align:center;}
+.msb-s .v{font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:600;}
+.msb-s .l{font-size:8px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px;}
+.msb-s.online .v{color:var(--green);}
+.msb-s.moving .v{color:var(--blue);}
+.msb-s.stopped .v{color:var(--amber);}
+.msb-srch{display:flex;align-items:center;gap:6px;background:var(--s2);border:1px solid var(--b1);border-radius:7px;padding:7px 10px;}
+.msb-srch input{background:transparent;border:none;outline:none;font-size:12px;color:var(--t1);flex:1;font-family:'Inter',sans-serif;}
+.msb-list{flex:1;overflow-y:auto;padding:6px;}
+.vmc{padding:8px 10px;border-radius:8px;cursor:pointer;margin-bottom:3px;border:1px solid transparent;transition:all .15s;}
+.vmc:hover{background:var(--s2);}
+.vmc.sel{background:rgba(217,26,26,.08);border-color:rgba(217,26,26,.3);}
+.vmc-r1{display:flex;align-items:center;gap:7px;}
+.vmc-plate{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;flex:1;}
+.sdot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.sdot.moving{background:var(--blue);}
+.sdot.stopped{background:var(--amber);}
+.sdot.offline{background:var(--t3);}
+.sdot.blocked{background:var(--red);}
+.map-fabs{position:absolute;bottom:80px;right:12px;display:flex;flex-direction:column;gap:8px;z-index:99;}
+.fab{width:40px;height:40px;background:rgba(12,12,12,.92);border:1px solid var(--b1);border-radius:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px;backdrop-filter:blur(8px);transition:all .2s;}
+.fab:hover{border-color:var(--red);}
+
+/* BOTTOM SHEET */
+.bsheet{position:absolute;bottom:0;left:0;right:0;z-index:150;transform:translateY(100%);transition:transform .3s ease;}
+.bsheet.open{transform:translateY(0);}
+.bsh{width:36px;height:4px;background:var(--b2);border-radius:2px;margin:10px auto 0;}
+.bsc{background:var(--s1);border-top:1px solid var(--b1);border-radius:20px 20px 0 0;padding:10px 14px 24px;max-height:72vh;overflow-y:auto;}
+.vd-top{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--b1);}
+.vd-info{flex:1;}
+.vd-plate{font-family:'JetBrains Mono',monospace;font-size:18px;font-weight:700;}
+.vd-model{font-size:11px;color:var(--t2);margin-top:2px;}
+.vd-status{display:inline-block;margin-top:5px;font-size:10px;font-weight:700;padding:3px 8px;border-radius:5px;letter-spacing:.5px;}
+.vd-status.moving{background:rgba(59,130,246,.12);color:var(--blue);border:1px solid rgba(59,130,246,.25);}
+.vd-status.stopped{background:rgba(245,158,11,.1);color:var(--amber);border:1px solid rgba(245,158,11,.25);}
+.vd-status.offline{background:rgba(68,68,68,.3);color:var(--t2);border:1px solid var(--b1);}
+.vd-status.blocked{background:rgba(217,26,26,.12);color:var(--red);border:1px solid rgba(217,26,26,.3);}
+.vd-close{width:28px;height:28px;background:var(--s2);border:1px solid var(--b1);border-radius:7px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;flex-shrink:0;}
+.kpis-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;}
+.kpi-sm{background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:8px 6px;text-align:center;}
+.kpi-sm .v{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;}
+.kpi-sm .l{font-size:8px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px;margin-top:2px;}
+.vd-addr{font-size:11px;color:var(--t2);margin-bottom:12px;padding:8px 10px;background:var(--s2);border-radius:7px;border:1px solid var(--b1);}
+.vd-acts{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:12px;}
+.vd-btn{padding:11px;background:var(--s2);border:1px solid var(--b1);border-radius:9px;font-size:11px;font-weight:600;cursor:pointer;text-align:center;transition:all .2s;}
+.vd-btn:hover{border-color:var(--b2);}
+.vd-btn.danger{background:rgba(217,26,26,.1);border-color:rgba(217,26,26,.3);color:var(--red);}
+.vd-btn.success{background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.25);color:var(--green);}
+.vd-btn.full{grid-column:1/-1;}
+.ev-head{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--t3);margin-bottom:6px;margin-top:12px;}
+.ev-item{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--b1);}
+.ev-item:last-child{border:none;}
+.ev-time{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--t2);width:36px;flex-shrink:0;}
+.ev-ic{font-size:13px;width:20px;text-align:center;}
+.ev-txt{font-size:11px;}
+
+/* CARDS */
+.sec-title{display:flex;align-items:center;justify-content:space-between;font-size:14px;font-weight:700;margin-bottom:12px;}
+.add-btn{font-size:11px;font-weight:600;padding:5px 12px;background:var(--red);color:#fff;border:none;border-radius:6px;cursor:pointer;}
+.card{background:var(--s1);border:1px solid var(--b1);border-radius:12px;padding:14px;margin-bottom:8px;}
+.card-top{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+.card-info{flex:1;}
+.card-title{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;}
+.card-sub{font-size:10px;color:var(--t2);margin-top:2px;}
+.badge{font-size:9px;font-weight:700;padding:2px 7px;border-radius:4px;}
+.badge-moving{background:rgba(59,130,246,.12);color:var(--blue);}
+.badge-stopped{background:rgba(245,158,11,.1);color:var(--amber);}
+.badge-offline{background:var(--s2);color:var(--t2);}
+.badge-blocked{background:rgba(217,26,26,.12);color:var(--red);}
+.badge-green{background:rgba(16,185,129,.1);color:var(--green);}
+.badge-blue{background:rgba(59,130,246,.1);color:var(--blue);}
+.badge-gray{background:var(--s2);color:var(--t2);}
+.kpis-row{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:10px;}
+.kpi-box{background:var(--s2);border:1px solid var(--b1);border-radius:7px;padding:6px;text-align:center;}
+.kpi-box .v{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;}
+.kpi-box .l{font-size:8px;color:var(--t2);text-transform:uppercase;letter-spacing:.3px;}
+.acts-row{display:flex;gap:5px;}
+.act-btn{flex:1;padding:8px;background:var(--s2);border:1px solid var(--b1);border-radius:7px;font-size:10px;font-weight:600;cursor:pointer;text-align:center;transition:all .15s;}
+.act-btn:hover{border-color:var(--b2);}
+.act-btn.red{color:var(--red);border-color:rgba(217,26,26,.3);background:rgba(217,26,26,.07);}
+.act-btn.green{color:var(--green);border-color:rgba(16,185,129,.3);background:rgba(16,185,129,.07);}
+.act-btn.blue{color:var(--blue);border-color:rgba(59,130,246,.3);background:rgba(59,130,246,.07);}
+
+/* ALERTS */
+.alert-item{background:var(--s1);border:1px solid var(--b1);border-radius:10px;padding:13px 14px;margin-bottom:7px;}
+.alert-top{display:flex;align-items:center;gap:10px;}
+.alert-ic{font-size:20px;}
+.alert-name{font-size:13px;font-weight:600;}
+.alert-desc{font-size:10px;color:var(--t2);margin-top:1px;}
+.toggle{width:40px;height:22px;background:var(--b1);border-radius:11px;position:relative;cursor:pointer;transition:background .2s;flex-shrink:0;}
+.toggle.on{background:var(--red);}
+.toggle::after{content:'';position:absolute;width:16px;height:16px;background:#fff;border-radius:50%;top:3px;left:3px;transition:transform .2s;}
+.toggle.on::after{transform:translateX(18px);}
+.notif-item{display:flex;align-items:center;gap:10px;padding:10px;border-radius:9px;margin-bottom:6px;border:1px solid var(--b1);}
+.notif-item.unread{background:rgba(217,26,26,.05);border-color:rgba(217,26,26,.2);}
+
+/* CFG */
+.cfg-section{background:var(--s1);border:1px solid var(--b1);border-radius:12px;padding:16px;margin-bottom:10px;}
+.cfg-title{font-size:11px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;}
+.cfg-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--b1);}
+.cfg-row:last-child{border:none;padding-bottom:0;}
+.cfg-label{font-size:13px;font-weight:500;}
+.cfg-sub{font-size:10px;color:var(--t2);margin-top:1px;}
+
+/* FINANCEIRO */
+.fin-card{background:var(--s1);border:1px solid var(--b1);border-radius:12px;padding:14px;margin-bottom:8px;}
+.fin-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.fin-nome{font-size:13px;font-weight:700;}
+.fin-plano{font-size:9px;}
+.fin-valor{font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:700;color:var(--t1);}
+.fin-info{font-size:10px;color:var(--t2);}
+.fin-acts{display:flex;gap:6px;margin-top:10px;}
+
+/* MODAL */
+.modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);z-index:1000;display:none;align-items:flex-end;}
+.modal-ov.open{display:flex;}
+.modal-box{width:100%;background:var(--s1);border-top:1px solid var(--b1);border-radius:20px 20px 0 0;padding:20px 20px 32px;max-height:88vh;overflow-y:auto;}
+.modal-title{font-size:15px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;}
+.modal-close{width:28px;height:28px;background:var(--s2);border:1px solid var(--b1);border-radius:7px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;}
+.mf{margin-bottom:12px;}
+.mf label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--t2);display:block;margin-bottom:5px;}
+.mf input,.mf select{width:100%;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:11px 12px;font-size:13px;color:var(--t1);font-family:'Inter',sans-serif;outline:none;transition:border-color .2s;}
+.mf input:focus,.mf select:focus{border-color:var(--red);}
+.mf select option{background:var(--s1);}
+.mf-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.mbtn{width:100%;padding:12px;background:var(--red);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;margin-top:4px;}
+.mbtn.sec{background:var(--s2);color:var(--t1);border:1px solid var(--b1);margin-top:8px;}
+.msuccess{background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:12px;margin-top:8px;font-size:12px;color:var(--green);display:none;}
+
+/* EMPTY */
+.empty{text-align:center;padding:48px 20px;color:var(--t3);}
+.empty .ei{font-size:48px;margin-bottom:8px;}
+.empty .et{font-size:13px;font-weight:500;}
+.empty .es{font-size:11px;margin-top:4px;}
+
+/* TOAST */
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(10px);background:var(--s2);border:1px solid var(--b1);color:var(--t1);padding:10px 18px;border-radius:10px;font-size:12px;font-weight:600;z-index:9999;opacity:0;transition:all .25s;pointer-events:none;white-space:nowrap;}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+.toast.ok{border-color:rgba(16,185,129,.4);color:var(--green);}
+.toast.err{border-color:rgba(217,26,26,.4);color:var(--red);}
+
+/* LOADING */
+.loading{display:flex;align-items:center;justify-content:center;padding:40px;color:var(--t3);font-size:12px;gap:8px;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.spinner{width:16px;height:16px;border:2px solid var(--b1);border-top-color:var(--red);border-radius:50%;animation:spin .7s linear infinite;}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div class="screen active" id="ls">
+  <div class="lw">
+    <div class="logo-area">
+      <svg width="52" height="52" viewBox="0 0 72 72" fill="none" style="margin-bottom:12px">
+        <polygon points="4,4 20,4 68,68 52,68" fill="#D91A1A"/>
+        <polygon points="52,4 68,4 20,68 4,68" fill="#D91A1A"/>
+        <polygon points="36,28 44,36 36,44 28,36" fill="#0C0C0C"/>
+      </svg>
+      <div class="logo-wordmark">FEL<span>O</span>GIX</div>
+      <div class="logo-plan">Track</div>
+    </div>
+    <div class="lcard">
+      <div class="ltitle">Acesso à plataforma</div>
+      <div class="lsub">Entre com suas credenciais</div>
+      <div class="lf"><label>Email</label><input type="email" id="lEmail" placeholder="seu@email.com" autocomplete="username"/></div>
+      <div class="lf"><label>Senha</label><input type="password" id="lPass" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"/></div>
+      <button class="lbtn" id="lBtn" onclick="doLogin()">Entrar</button>
+      <div class="lerr" id="lerr"></div>
+      <div class="lforgot" onclick="showForgot()">Esqueci minha senha</div>
+    </div>
+  </div>
+</div>
+
+<!-- APP -->
+<div class="screen" id="appScreen">
+  <div class="topbar">
+    <div class="tb-logo">
+      <svg width="22" height="22" viewBox="0 0 72 72" fill="none">
+        <polygon points="4,4 20,4 68,68 52,68" fill="#D91A1A"/>
+        <polygon points="52,4 68,4 20,68 4,68" fill="#D91A1A"/>
+        <polygon points="36,28 44,36 36,44 28,36" fill="#0C0C0C"/>
+      </svg>
+      <span class="tb-wordmark">FEL<span>O</span>GIX</span>
+      <span class="tb-plan" id="tbPlan">Track</span>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="live-chip" id="liveChip" style="display:none"><div class="live-dot"></div>LIVE</div>
+    <span id="tbRole" class="role-badge"></span>
+    <div class="tb-icon" onclick="goTab('alertas')" id="notifBtn">🔔<div class="tb-ndot" id="notifDot" style="display:none"></div></div>
+    <div class="tb-av" id="tbAv" onclick="toggleAvMenu()">--</div>
+    <div class="av-menu" id="avMenu">
+      <div class="av-mi muted" id="avName"></div>
+      <div class="av-mi muted" id="avEmpresa" style="display:none"></div>
+      <div class="av-divider"></div>
+      <div class="av-mi" onclick="openAlterarSenha();closeAvMenu()">🔑 Alterar senha</div>
+      <div class="av-divider"></div>
+      <div class="av-mi danger" onclick="logout()">Sair</div>
+    </div>
+  </div>
+  <div class="content" id="mainContent"></div>
+  <div class="bnav" id="bnav"></div>
+</div>
+
+<!-- MODAL -->
+<div class="modal-ov" id="modalOv" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box">
+    <div class="modal-title"><span id="mTitle"></span><div class="modal-close" onclick="closeModal()">✕</div></div>
+    <div id="mBody"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+let TOKEN = localStorage.getItem('flx_token') || '';
+let CU = null;
+let map = null, markers = {}, selV = null, mapSbOpen = false, currentTab = '';
+let VEHICLES = [], COMPARTILHAMENTOS = [], liveTimer = null;
+
+/* ─── API ─── */
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type':'application/json' } };
+  if (TOKEN) opts.headers['Authorization'] = 'Bearer ' + TOKEN;
+  if (body)  opts.body = JSON.stringify(body);
+  const r = await fetch(API + path, opts);
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.erro || 'Erro');
+  return d;
+}
+
+/* ─── LOGIN ─── */
+async function doLogin() {
+  const email = document.getElementById('lEmail').value.trim();
+  const senha = document.getElementById('lPass').value.trim();
+  const btn = document.getElementById('lBtn');
+  btn.textContent = 'Entrando…'; btn.disabled = true;
+  try {
+    const d = await api('POST', '/api/login', { email, senha });
+    TOKEN = d.token;
+    localStorage.setItem('flx_token', TOKEN);
+    CU = d;
+    initApp();
+  } catch(e) {
+    document.getElementById('lerr').textContent = e.message;
+  } finally {
+    btn.textContent = 'Entrar'; btn.disabled = false;
+  }
+}
+
+function showForgot() {
+  document.getElementById('mTitle').textContent = 'Recuperar senha';
+  document.getElementById('mBody').innerHTML = `
+    <p style="font-size:12px;color:var(--t2);margin-bottom:16px">Digite seu email e enviaremos uma nova senha.</p>
+    <div class="mf"><label>Email</label><input type="email" id="fEmail" placeholder="seu@email.com"/></div>
+    <button class="mbtn" onclick="enviarRecuperacao()">Enviar nova senha</button>
+    <div class="msuccess" id="forgotOk">✅ Email enviado! Verifique sua caixa de entrada.</div>`;
+  openModal();
+}
+
+async function enviarRecuperacao() {
+  const email = document.getElementById('fEmail').value.trim();
+  if (!email) return;
+  try {
+    await api('POST', '/api/esqueci-senha', { email });
+    document.getElementById('forgotOk').style.display = 'block';
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+function initApp() {
+  document.getElementById('ls').classList.remove('active');
+  document.getElementById('appScreen').classList.add('active');
+  document.getElementById('tbAv').textContent = CU.initials;
+  document.getElementById('avName').textContent = CU.nome;
+  if (CU.empresa && CU.role !== 'admin') {
+    const el = document.getElementById('avEmpresa');
+    el.textContent = CU.empresa; el.style.display = 'block';
+  }
+  const rl = {admin:'Super Admin', gestor:'Gestor'};
+  const rc = {admin:'rb-admin', gestor:'rb-gestor'};
+  const rb = document.getElementById('tbRole');
+  rb.textContent = rl[CU.role]||CU.role;
+  rb.className = 'role-badge '+(rc[CU.role]||'');
+  if (CU.role === 'admin') document.getElementById('liveChip').style.display = 'flex';
+  buildNav();
+  goTab('mapa');
+  liveTimer = setInterval(liveMove, 5000);
+}
+
+function logout() {
+  clearInterval(liveTimer);
+  TOKEN = ''; CU = null; map = null; markers = {}; selV = null; VEHICLES = [];
+  localStorage.removeItem('flx_token');
+  document.getElementById('appScreen').classList.remove('active');
+  document.getElementById('ls').classList.add('active');
+  document.getElementById('lEmail').value = '';
+  document.getElementById('lPass').value = '';
+  document.getElementById('lerr').textContent = '';
+  document.getElementById('avEmpresa').style.display = 'none';
+  document.getElementById('liveChip').style.display = 'none';
+  closeAvMenu();
+}
+
+/* ─── NAV ─── */
+function buildNav() {
+  const adminTabs = [
+    {ic:'🗺',lbl:'Mapa',id:'mapa'},
+    {ic:'👥',lbl:'Clientes',id:'clientes'},
+    {ic:'🚗',lbl:'Veículos',id:'veiculos'},
+    {ic:'📱',lbl:'Demo',id:'compartilhamentos'},
+    {ic:'💰',lbl:'Financeiro',id:'financeiro'},
+  ];
+  const gestorTabs = [
+    {ic:'🗺',lbl:'Mapa',id:'mapa'},
+    {ic:'🚗',lbl:'Veículos',id:'veiculos'},
+    {ic:'🔔',lbl:'Alertas',id:'alertas'},
+  ];
+  const tabs = CU.role === 'admin' ? adminTabs : gestorTabs;
+  document.getElementById('bnav').innerHTML = tabs.map(t =>
+    `<div class="bni" id="bni_${t.id}" onclick="goTab('${t.id}',this)">
+      <div class="ic">${t.ic}</div><div>${t.lbl}</div><div class="bni-dot"></div>
+    </div>`).join('');
+}
+
+function goTab(id, el) {
+  document.querySelectorAll('.bni').forEach(b => b.classList.remove('on'));
+  const btn = el || document.getElementById('bni_'+id);
+  if (btn) btn.classList.add('on');
+  currentTab = id; closeAvMenu();
+  const c = document.getElementById('mainContent');
+  const map_ = {
+    mapa:       () => renderMapa(c),
+    clientes:   () => renderClientes(c),
+    veiculos:   () => renderVeiculos(c),
+    compartilhamentos: () => renderCompartilhamentos(c),
+    financeiro: () => renderFinanceiro(c),
+    alertas:    () => renderAlertas(c),
+  };
+  if (map_[id]) map_[id]();
+}
+
+/* ─── MAPA ─── */
+function renderMapa(c) {
+  c.innerHTML = `<div id="mapWrap" style="width:100%;height:100%;position:relative;">
+    <div id="map"></div>
+    <div class="map-sb" id="mapSb">
+      <div class="msb-head">
+        <div class="msb-stats">
+          <div class="msb-s online"><div class="v" id="sbOnline">0</div><div class="l">Online</div></div>
+          <div class="msb-s moving"><div class="v" id="sbMoving">0</div><div class="l">Em rota</div></div>
+          <div class="msb-s stopped"><div class="v" id="sbStopped">0</div><div class="l">Parado</div></div>
+        </div>
+        <div class="msb-srch"><span style="color:var(--t3)">🔍</span><input placeholder="Placa…" oninput="filterMapList(this.value)"/></div>
+      </div>
+      <div class="msb-list" id="mapList"><div class="loading"><div class="spinner"></div>Carregando…</div></div>
+    </div>
+    <div class="map-fabs">
+      <div class="fab" onclick="toggleMapSb()">☰</div>
+      <div class="fab" onclick="centerAll()">⊙</div>
+    </div>
+    <div class="bsheet" id="bsheet"><div class="bsh"></div><div class="bsc" id="bshContent"></div></div>
+  </div>`;
+  setTimeout(() => initMap(), 80);
+  loadVehicles();
+}
+
+async function loadVehicles() {
+  try {
+    const vs = await api('GET', '/api/veiculos');
+    VEHICLES = vs.map(v => ({
+      ...v,
+      status: v.bloqueado ? 'blocked' : (v.imei ? 'offline' : 'offline'),
+      speed: 0, lat: -23.55 + Math.random()*.08, lng: -46.63 + Math.random()*.08,
+      ignition: false, updated: 'offline'
+    }));
+    updateMapList();
+    if (map) { Object.values(markers).forEach(m => map.removeLayer(m)); markers = {}; VEHICLES.forEach(v => addMkr(v)); centerAll(); }
+  } catch(e) { console.error(e); }
+}
+
+function updateMapList() {
+  const el = document.getElementById('mapList'); if (!el) return;
+  const allItems = VEHICLES.length + COMPARTILHAMENTOS.length;
+  if (!allItems) { el.innerHTML = `<div class="empty"><div class="ei">🚗</div><div class="et">Nenhum veículo</div><div class="es">Cadastre veículos na aba Veículos</div></div>`; return; }
+  document.getElementById('sbOnline').textContent  = VEHICLES.filter(v => v.status !== 'offline').length;
+  document.getElementById('sbMoving').textContent  = VEHICLES.filter(v => v.status === 'moving').length;
+  document.getElementById('sbStopped').textContent = VEHICLES.filter(v => v.status === 'stopped').length;
+  const vehiclesHtml = VEHICLES.map(v => {
+    const dotC = v.bloqueado ? 'blocked' : v.status;
+    return `<div class="vmc${selV===v.id?' sel':''}" onclick="openBS(${v.id})">
+      <div class="vmc-r1"><div class="sdot ${dotC}"></div><div class="vmc-plate">${v.placa}</div>
+      <div style="flex:1;font-size:10px;color:var(--t2)">${(v.modelo||'').split(' ')[0]}</div>
+      <div style="font-size:10px;color:var(--t2)">${v.speed>0?v.speed+' km/h':'—'}</div></div>
+    </div>`;
+  }).join('');
+  const compsHtml = COMPARTILHAMENTOS.filter(c => c.latitude && c.longitude).map(c => {
+    const dotC = c.ultimo_update && new Date(c.ultimo_update) > new Date(Date.now()-60000) ? 'moving' : 'offline';
+    return `<div class="vmc" style="background:rgba(255,152,0,.1)">
+      <div class="vmc-r1"><div class="sdot ${dotC}"></div><div style="flex:1"><div class="vmc-plate" style="font-size:11px">📱 ${c.nome}</div><div style="font-size:9px;color:var(--t2)">${c.latitude?.toFixed(4)} ${c.longitude?.toFixed(4)}</div></div></div>
+    </div>`;
+  }).join('');
+  el.innerHTML = vehiclesHtml + compsHtml;
+}
+
+function filterMapList(q) {
+  const vs = q ? VEHICLES.filter(v => (v.placa+v.modelo).toLowerCase().includes(q.toLowerCase())) : VEHICLES;
+  const el = document.getElementById('mapList'); if (!el) return;
+  el.innerHTML = vs.map(v => `<div class="vmc" onclick="openBS(${v.id})">
+    <div class="vmc-r1"><div class="sdot ${v.bloqueado?'blocked':v.status}"></div>
+    <div class="vmc-plate">${v.placa}</div></div></div>`).join('');
+}
+
+function initMap() {
+  if (map) { map.remove(); map = null; }
+  map = L.map('map', {zoomControl:false}).setView([-23.549,-46.638], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19}).addTo(map);
+  VEHICLES.forEach(v => addMkr(v));
+  if (VEHICLES.length) centerAll();
+}
+
+function mkIcon(v) {
+  const c = v.bloqueado?'#D91A1A':v.status==='moving'?'#3b82f6':v.status==='stopped'?'#f59e0b':'#333';
+  const sym = v.status==='moving'?'▶':'●'; const sel = selV===v.id;
+  return L.divIcon({
+    html:`<div style="background:${c};width:${sel?34:28}px;height:${sel?34:28}px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,.2);box-shadow:0 3px 14px rgba(0,0,0,.7);font-size:10px;color:#fff"><span style="transform:rotate(45deg)">${sym}</span></div>
+    <div style="background:${c};color:#fff;font-size:8px;font-weight:700;font-family:monospace;padding:1px 5px;border-radius:3px;margin-top:2px;white-space:nowrap">${v.placa}</div>`,
+    iconSize:[65,50], iconAnchor:[sel?17:14,48], className:''
+  });
+}
+
+function addMkr(v) {
+  if (!map) return;
+  const m = L.marker([v.lat,v.lng],{icon:mkIcon(v)}).addTo(map);
+  m.on('click', () => openBS(v.id)); markers[v.id] = m;
+}
+
+function syncMkrs() {
+  VEHICLES.forEach(v => {
+    if (markers[v.id]) { markers[v.id].setLatLng([v.lat,v.lng]); markers[v.id].setIcon(mkIcon(v)); }
+  });
+  COMPARTILHAMENTOS.forEach(c => {
+    const mkid = 'comp_'+c.id;
+    if (c.latitude && c.longitude) {
+      if (markers[mkid]) {
+        markers[mkid].setLatLng([c.latitude,c.longitude]);
+      } else {
+        const mkr = L.circleMarker([c.latitude,c.longitude], {radius:6, fillColor:'#FF9800', color:'white', weight:2, opacity:1, fillOpacity:0.8});
+        mkr.bindPopup(`<div style="font-size:12px"><strong>${c.nome}</strong><br>📱 Compartilhamento ativo</div>`);
+        mkr.addTo(map);
+        markers[mkid] = mkr;
+      }
+    }
+  });
+}
+
+function centerAll() {
+  const vs = VEHICLES.filter(v => v.lat && v.lng);
+  if (vs.length && map) map.fitBounds(L.latLngBounds(vs.map(v=>[v.lat,v.lng])), {padding:[60,60]});
+}
+
+function toggleMapSb() { mapSbOpen=!mapSbOpen; document.getElementById('mapSb')?.classList.toggle('open',mapSbOpen); }
+
+function openBS(id) {
+  const v = VEHICLES.find(x => x.id===id); if (!v) return;
+  selV = id; syncMkrs();
+  if (map) map.flyTo([v.lat,v.lng],15,{duration:.7});
+  const stKey = v.bloqueado?'blocked':v.status;
+  const stMap = {moving:{cls:'moving',txt:'▶ Em rota'},stopped:{cls:'stopped',txt:'■ Parado'},offline:{cls:'offline',txt:'● Offline'},blocked:{cls:'blocked',txt:'🔒 Bloqueado'}};
+  const blockBtn = v.bloqueado
+    ? `<div class="vd-btn success full" onclick="toggleBlock(${v.id})">✅ Desbloquear ignição</div>`
+    : `<div class="vd-btn danger full" onclick="toggleBlock(${v.id})">🔒 Bloquear ignição</div>`;
+  document.getElementById('bshContent').innerHTML = `
+    <div class="vd-top">
+      <div class="vd-info">
+        <div class="vd-plate">${v.placa}</div>
+        <div class="vd-model">${v.modelo||''} ${v.ano||''} · ${v.cor||''}</div>
+        <div class="vd-status ${stMap[stKey].cls}">${stMap[stKey].txt}</div>
+      </div>
+      <div class="vd-close" onclick="closeBS()">✕</div>
+    </div>
+    <div class="kpis-grid">
+      <div class="kpi-sm"><div class="v" style="color:var(--blue)">${v.speed}</div><div class="l">km/h</div></div>
+      <div class="kpi-sm"><div class="v">${v.ignition?'🟢':'🔴'}</div><div class="l">Ignição</div></div>
+      <div class="kpi-sm"><div class="v" style="font-size:10px;color:var(--t2)">${v.updated}</div><div class="l">Sinal</div></div>
+    </div>
+    <div class="vd-addr">📍 <span style="color:var(--t1)">Aguardando rastreador…</span></div>
+    <div class="vd-acts">
+      <div class="vd-btn" onclick="closeBS()">✕ Fechar</div>
+      <div class="vd-btn" onclick="goTab('veiculos')">📋 Detalhes</div>
+      ${blockBtn}
+    </div>
+    <div class="ev-head">Eventos</div>
+    <div class="ev-item"><div class="ev-ic">📡</div><div class="ev-txt" style="color:var(--t2)">Aguardando conexão do rastreador EC33</div></div>`;
+  document.getElementById('bsheet').classList.add('open');
+}
+
+function closeBS() { document.getElementById('bsheet').classList.remove('open'); selV=null; syncMkrs(); }
+
+async function toggleBlock(id) {
+  const v = VEHICLES.find(x => x.id===id); if (!v) return;
+  try {
+    await api('PUT', `/api/veiculos/${id}`, { bloqueado: !v.bloqueado });
+    v.bloqueado = !v.bloqueado;
+    if (v.bloqueado) { v.status='stopped'; v.speed=0; v.ignition=false; }
+    toast(v.bloqueado?`🔒 ${v.placa} bloqueado`:`✅ ${v.placa} desbloqueado`, v.bloqueado?'err':'ok');
+    syncMkrs(); openBS(id);
+    if (currentTab==='veiculos') renderVeiculos(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function liveMove() {
+  try {
+    const posicoes = await api('GET', '/api/posicoes');
+    if (Array.isArray(posicoes) && posicoes.length > 0) {
+      posicoes.forEach(pos => {
+        const v = VEHICLES.find(v => String(v.imei) === String(pos.id));
+        if (v) {
+          v.lat = pos.lat;
+          v.lng = pos.lon;
+          v.speed = pos.velocidade || 0;
+          v.status = pos.velocidade > 5 ? 'moving' : 'online';
+          v.timestamp = pos.timestamp;
+        }
+      });
+    } else {
+      VEHICLES.forEach(v => {
+        if (v.status==='moving' && !v.bloqueado) {
+          v.lat += (Math.random()-.5)*.002; v.lng += (Math.random()-.5)*.002;
+          v.speed = Math.round(Math.max(20,Math.min(90,v.speed+(Math.random()-.5)*10)));
+        }
+      });
+    }
+  } catch(e) {
+    VEHICLES.forEach(v => {
+      if (v.status==='moving' && !v.bloqueado) {
+        v.lat += (Math.random()-.5)*.002; v.lng += (Math.random()-.5)*.002;
+        v.speed = Math.round(Math.max(20,Math.min(90,v.speed+(Math.random()-.5)*10)));
+      }
+    });
+  }
+  try {
+    const comps = await api('GET', '/api/compartilhamentos');
+    COMPARTILHAMENTOS = comps.map(c => ({ ...c, tipo: 'compartilhamento' }));
+  } catch(e) {}
+  syncMkrs(); updateMapList();
+  if (selV) openBS(selV);
+}
+
+/* ─── CLIENTES (admin) ─── */
+async function renderClientes(c) {
+  c.innerHTML = `<div class="pp"><div class="sec-title">Clientes <button class="add-btn" onclick="openAddCliente()">＋ Novo</button></div><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
+  try {
+    const clientes = await api('GET', '/api/clientes');
+    const planoLabel = {cortesia:'Cortesia',track:'Track — R$29,90/veículo',personalizado:'Personalizado'};
+    const planoBadge = {cortesia:'badge-gray',track:'badge-blue',personalizado:'badge-green'};
+    c.innerHTML = `<div class="pp">
+      <div class="sec-title">Clientes <span style="color:var(--t2);font-size:11px;font-weight:400">${clientes.length}</span>
+        <button class="add-btn" onclick="openAddCliente()">＋ Novo</button>
+      </div>
+      ${!clientes.length ? `<div class="empty"><div class="ei">👥</div><div class="et">Nenhum cliente</div><div class="es">Cadastre o primeiro cliente</div></div>` :
+        clientes.map(cl => `
+          <div class="card">
+            <div class="card-top">
+              <div class="card-info">
+                <div class="card-title" style="font-family:'Inter',sans-serif;font-size:14px">${cl.nome}</div>
+                <div class="card-sub">${cl.tipo.toUpperCase()} ${cl.documento} · ${cl.email}</div>
+              </div>
+              <span class="badge ${planoBadge[cl.plano]||'badge-gray'}">${cl.plano.toUpperCase()}</span>
+            </div>
+            <div class="acts-row">
+              <div class="act-btn blue" onclick="openEditCliente(${JSON.stringify(cl).replace(/"/g,'&quot;')})">✏️ Editar</div>
+              <div class="act-btn ${cl.ativo?'red':'green'}" onclick="toggleCliente(${cl.id},${cl.ativo})">${cl.ativo?'🔴 Desativar':'🟢 Ativar'}</div>
+            </div>
+          </div>`).join('')}
+    </div>`;
+  } catch(e) { c.innerHTML = `<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+function openAddCliente() {
+  document.getElementById('mTitle').textContent = 'Novo cliente';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf-row">
+      <div class="mf"><label>Tipo</label><select id="mTipo"><option value="cpf">CPF</option><option value="cnpj">CNPJ</option></select></div>
+      <div class="mf"><label>Documento</label><input id="mDoc" placeholder="000.000.000-00"/></div>
+    </div>
+    <div class="mf"><label>Nome / Razão Social</label><input id="mNome" placeholder="Nome do cliente"/></div>
+    <div class="mf"><label>Email</label><input id="mEmail" type="email" placeholder="cliente@email.com"/></div>
+    <div class="mf"><label>Plano</label>
+      <select id="mPlano" onchange="toggleValor(this.value)">
+        <option value="cortesia">Cortesia (grátis)</option>
+        <option value="track">Track — R$29,90/veículo</option>
+        <option value="personalizado">Personalizado</option>
+      </select>
+    </div>
+    <div class="mf" id="mModoBox" style="display:none"><label>Como cobrar</label>
+      <select id="mModo" onchange="toggleModo('m')">
+        <option value="fixo">Valor fixo mensal</option>
+        <option value="por_veiculo">Valor por veículo</option>
+      </select>
+    </div>
+    <div class="mf" id="mValorBox" style="display:none"><label id="mValorLabel">Valor fixo mensal (R$)</label><input id="mValor" type="number" placeholder="0.00" step="0.01"/></div>
+    <div class="mf"><label>Dia de vencimento</label><input id="mDia" type="number" value="10" min="1" max="28"/></div>
+    <button class="mbtn" onclick="saveCliente()">Cadastrar cliente</button>
+    <div class="msuccess" id="clienteOk"></div>`;
+  openModal();
+}
+
+function toggleValor(plano) {
+  const perso = plano === 'personalizado';
+  document.getElementById('mModoBox').style.display = perso ? 'block' : 'none';
+  document.getElementById('mValorBox').style.display = perso ? 'block' : 'none';
+  if (perso) toggleModo('m');
+}
+function toggleModo(p) {
+  const modo = document.getElementById(p+'Modo').value;
+  document.getElementById(p+'ValorLabel').textContent = modo === 'por_veiculo' ? 'Valor por veículo (R$)' : 'Valor fixo mensal (R$)';
+}
+
+async function saveCliente() {
+  const plano = document.getElementById('mPlano').value;
+  const body = {
+    tipo: document.getElementById('mTipo').value,
+    documento: document.getElementById('mDoc').value.trim(),
+    nome: document.getElementById('mNome').value.trim(),
+    email: document.getElementById('mEmail').value.trim(),
+    plano,
+    cobranca_modo: plano === 'personalizado' ? document.getElementById('mModo').value : null,
+    valor_plano: parseFloat(document.getElementById('mValor')?.value||0)||0,
+    dia_vencimento: parseInt(document.getElementById('mDia').value)||10,
+  };
+  if (!body.documento||!body.nome||!body.email) return toast('Preencha todos os campos','err');
+  try {
+    const r = await api('POST','/api/clientes',body);
+    const ok = document.getElementById('clienteOk');
+    ok.style.display='block';
+    ok.textContent = `✅ Cliente cadastrado! Senha gerada: ${r.senha_gerada} (enviada por email)`;
+    renderClientes(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+function openEditCliente(cl) {
+  document.getElementById('mTitle').textContent = 'Editar cliente';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Nome</label><input id="eNome" value="${cl.nome}"/></div>
+    <div class="mf"><label>Email</label><input id="eEmail" type="email" value="${cl.email}"/></div>
+    <div class="mf"><label>Nova senha (deixe em branco para não alterar)</label><input id="eSenha" type="text" placeholder="Nova senha…"/></div>
+    <div class="mf"><label>Plano</label>
+      <select id="ePlano" onchange="toggleValorE(this.value)">
+        <option value="cortesia" ${cl.plano==='cortesia'?'selected':''}>Cortesia (grátis)</option>
+        <option value="track" ${cl.plano==='track'?'selected':''}>Track — R$29,90/veículo</option>
+        <option value="personalizado" ${cl.plano==='personalizado'?'selected':''}>Personalizado</option>
+      </select>
+    </div>
+    <div class="mf" id="eModoBox" style="display:${cl.plano==='personalizado'?'block':'none'}"><label>Como cobrar</label>
+      <select id="eModo" onchange="toggleModo('e')">
+        <option value="fixo" ${cl.cobranca_modo!=='por_veiculo'?'selected':''}>Valor fixo mensal</option>
+        <option value="por_veiculo" ${cl.cobranca_modo==='por_veiculo'?'selected':''}>Valor por veículo</option>
+      </select>
+    </div>
+    <div class="mf" id="eValorBox" style="display:${cl.plano==='personalizado'?'block':'none'}">
+      <label id="eValorLabel">${cl.cobranca_modo==='por_veiculo'?'Valor por veículo (R$)':'Valor fixo mensal (R$)'}</label><input id="eValor" type="number" value="${cl.valor_plano||0}" step="0.01"/>
+    </div>
+    <div class="mf"><label>Dia de vencimento</label><input id="eDia" type="number" value="${cl.dia_vencimento||10}" min="1" max="28"/></div>
+    <button class="mbtn" onclick="updateCliente(${cl.id})">Salvar alterações</button>`;
+  openModal();
+}
+
+function toggleValorE(plano) {
+  const perso = plano === 'personalizado';
+  document.getElementById('eModoBox').style.display = perso ? 'block' : 'none';
+  document.getElementById('eValorBox').style.display = perso ? 'block' : 'none';
+  if (perso) toggleModo('e');
+}
+
+async function updateCliente(id) {
+  const body = {
+    nome: document.getElementById('eNome').value.trim(),
+    email: document.getElementById('eEmail').value.trim(),
+    plano: document.getElementById('ePlano').value,
+    cobranca_modo: document.getElementById('ePlano').value === 'personalizado' ? document.getElementById('eModo').value : null,
+    valor_plano: parseFloat(document.getElementById('eValor')?.value||0)||0,
+    dia_vencimento: parseInt(document.getElementById('eDia').value)||10,
+  };
+  const s = document.getElementById('eSenha').value.trim();
+  if (s) body.senha = s;
+  try {
+    await api('PUT',`/api/clientes/${id}`,body);
+    closeModal(); toast('Cliente atualizado ✅','ok');
+    renderClientes(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function toggleCliente(id, ativo) {
+  try {
+    await api('PUT',`/api/clientes/${id}`,{ativo:!ativo});
+    toast(ativo?'Cliente desativado':'Cliente ativado','ok');
+    renderClientes(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+/* ─── VEÍCULOS ─── */
+async function renderVeiculos(c) {
+  c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
+  try {
+    const vs = await api('GET','/api/veiculos');
+    VEHICLES = vs.map(v => ({ ...v, status: v.bloqueado?'blocked':'offline', speed:0, lat:-23.55+Math.random()*.08, lng:-46.63+Math.random()*.08, ignition:false, updated:'offline' }));
+    const addBtn = CU.role==='admin' ? `<button class="add-btn" onclick="openAddVeiculo()">＋ Veículo</button>` : '';
+    c.innerHTML = `<div class="pp">
+      <div class="sec-title">Veículos <span style="color:var(--t2);font-size:11px;font-weight:400">${vs.length}</span>${addBtn}</div>
+      ${!vs.length ? `<div class="empty"><div class="ei">🚗</div><div class="et">Nenhum veículo cadastrado</div><div class="es">${CU.role==='admin'?'Adicione o primeiro veículo':'Aguarde o administrador cadastrar seus veículos'}</div></div>` :
+        vs.map(v => {
+          const stKey = v.bloqueado?'blocked':'offline';
+          const stTxt = {moving:'▶ Em rota',stopped:'■ Parado',offline:'● Offline',blocked:'🔒 Bloqueado'};
+          const isLink = v.compartilhamento_id !== null;
+          let badgeColor = stKey, badgeTxt = stTxt[stKey]||stKey, typeIcon = '📡 Real (IMEI)';
+
+          if (isLink) {
+            // Verifica tipo do compartilhamento na listagem
+            badgeTxt = v.compartilhamento_id ? (v.tipo_rastreamento==='teste'?'⏰ Teste 7 dias':'📱 Permanente') : 'Demo';
+            badgeColor = v.tipo_rastreamento==='teste' ? 'amber' : 'green';
+            typeIcon = v.tipo_rastreamento==='teste' ? '⏰ Teste 7 dias' : '📱 Permanente';
+          }
+
+          return `<div class="card">
+            <div class="card-top">
+              <div class="card-info">
+                <div class="card-title">${v.placa}</div>
+                <div class="card-sub">${v.modelo||'—'} ${v.ano||''} · ${v.cor||'—'}</div>
+                ${CU.role==='admin'?`<div class="card-sub" style="margin-top:2px">👤 ${v.cliente_nome||'—'} · ${typeIcon}</div>`:''}
+              </div>
+              <span class="badge badge-${badgeColor}">${badgeTxt}</span>
+            </div>
+            <div class="kpis-row">
+              <div class="kpi-box"><div class="v" style="color:var(--t2)">—</div><div class="l">km/h</div></div>
+              <div class="kpi-box"><div class="v">${isLink?'🔗':v.imei?'📡':'—'}</div><div class="l">${isLink?'Link':'IMEI'}</div></div>
+              <div class="kpi-box"><div class="v" style="font-size:10px;color:var(--t2)">${isLink?'ativo':'offline'}</div><div class="l">Status</div></div>
+            </div>
+            <div class="acts-row">
+              <div class="act-btn" onclick="goTab('mapa');setTimeout(()=>openBS(${v.id}),300)">🗺 Ver no mapa</div>
+              ${CU.role==='admin'?`<div class="act-btn blue" onclick="openEditVeiculo(${JSON.stringify(v).replace(/"/g,'&quot;')})">✏️ Editar</div>`:''}
+              ${isLink?`<div class="act-btn green" onclick="showDemoLink(${v.compartilhamento_id})">📋 Ver Link</div>`:'<div class="act-btn" onclick="toggleBlock(${v.id})">${v.bloqueado?'✅ Desbloquear':'🔒 Bloquear'}</div>'}
+            </div>
+          </div>`;
+        }).join('')}
+    </div>`;
+  } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+async function openAddVeiculo() {
+  let clientes = [];
+  try { clientes = await api('GET','/api/clientes'); } catch(e){}
+  document.getElementById('mTitle').textContent = 'Adicionar veículo';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Placa</label><input id="vPlaca" placeholder="ABC-1234" style="text-transform:uppercase"/></div>
+    <div class="mf"><label>Tipo de Rastreamento</label>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-top:8px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px;background:var(--s2);border-radius:6px">
+          <input type="radio" name="vTipo" value="imei" checked onchange="toggleVeiculoTipo()"/> 📡 <strong>Rastreador Real</strong> (IMEI)
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px;background:var(--s2);border-radius:6px">
+          <input type="radio" name="vTipo" value="teste_7dias" onchange="toggleVeiculoTipo()"/> ⏰ <strong>Teste 7 Dias</strong> (Link temporário)
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px;background:var(--s2);border-radius:6px">
+          <input type="radio" name="vTipo" value="permanente" onchange="toggleVeiculoTipo()"/> 📱 <strong>Link Permanente</strong> (Celular forever)
+        </label>
+      </div>
+    </div>
+    <div class="mf" id="vImeiField"><label>IMEI do rastreador</label><input id="vImei" placeholder="Ex: 358899012345678"/></div>
+    <div id="vTesteInfo" style="display:none;font-size:12px;color:var(--t2);background:var(--s2);padding:12px;border-radius:8px;margin-bottom:12px">
+      ⏰ Link gerado automaticamente. Compartilhe com cliente - expira em 7 dias!
+    </div>
+    <div id="vPermanenteInfo" style="display:none;font-size:12px;color:var(--t2);background:var(--s2);padding:12px;border-radius:8px;margin-bottom:12px">
+      📱 Link permanente para rastreamento contínuo via celular. Sem equipamento, sem expiração!
+    </div>
+    <div class="mf"><label>Modelo</label><input id="vModelo" placeholder="Ex: Fiat Strada"/></div>
+    <div class="mf-row">
+      <div class="mf"><label>Ano</label><input id="vAno" type="number" placeholder="2024"/></div>
+      <div class="mf"><label>Cor</label><input id="vCor" placeholder="Branca"/></div>
+    </div>
+    <div class="mf"><label>Cliente</label>
+      <select id="vCliente">
+        ${clientes.map(cl=>`<option value="${cl.id}">${cl.nome}</option>`).join('')}
+      </select>
+    </div>
+    <button class="mbtn" onclick="saveVeiculo()">Adicionar veículo</button>`;
+  openModal();
+}
+
+function toggleVeiculoTipo() {
+  const tipo = document.querySelector('input[name="vTipo"]:checked').value;
+  document.getElementById('vImeiField').style.display = tipo==='imei'?'block':'none';
+  document.getElementById('vTesteInfo').style.display = tipo==='teste_7dias'?'block':'none';
+  document.getElementById('vPermanenteInfo').style.display = tipo==='permanente'?'block':'none';
+}
+
+async function saveVeiculo() {
+  const tipo = document.querySelector('input[name="vTipo"]:checked').value;
+  const body = {
+    placa: document.getElementById('vPlaca').value.trim().toUpperCase(),
+    imei:  tipo==='imei'?document.getElementById('vImei').value.trim():null,
+    modelo:document.getElementById('vModelo').value.trim(),
+    ano:   parseInt(document.getElementById('vAno').value)||2024,
+    cor:   document.getElementById('vCor').value.trim(),
+    cliente_id: parseInt(document.getElementById('vCliente').value),
+    tipo: tipo
+  };
+  if (!body.placa||!body.cliente_id) return toast('Placa e cliente são obrigatórios','err');
+  try {
+    const resultado = await api('POST','/api/veiculos',body);
+    closeModal();
+
+    if (resultado.demo_link) {
+      const titulo = tipo==='teste_7dias'?'⏰ Teste de 7 Dias Criado!':'📱 Link Permanente Gerado!';
+      const descricao = tipo==='teste_7dias'?'Link expira em 7 dias':'Link permanente, sem expiração';
+      document.getElementById('mTitle').textContent = titulo;
+      document.getElementById('mBody').innerHTML = `
+        <div style="text-align:center;padding:20px">
+          <div style="font-size:14px;color:var(--t2);margin-bottom:16px">
+            ✅ Veículo <strong>${body.placa}</strong> adicionado com sucesso!
+          </div>
+          <div style="background:var(--s2);padding:16px;border-radius:8px;margin-bottom:16px">
+            <div style="font-size:11px;color:var(--t3);margin-bottom:6px">${descricao.toUpperCase()}</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:12px;word-break:break-all;background:var(--s1);padding:12px;border-radius:4px;margin-bottom:10px">${resultado.demo_link}</div>
+            <button class="mbtn" onclick="copyToClipboard('${resultado.demo_link}'); toast('Link copiado!','ok')">📋 Copiar Link</button>
+          </div>
+          <div style="font-size:12px;color:var(--t2);background:rgba(52,168,224,.1);padding:12px;border-radius:8px">
+            📲 Compartilhe este link com o cliente via WhatsApp ou Email<br>Cliente abre no celular e já começa a rastrear!
+          </div>
+          <button class="mbtn sec" onclick="closeModal(); renderVeiculos(document.getElementById('mainContent')); loadVehicles();" style="margin-top:16px">Concluído</button>
+        </div>`;
+      openModal();
+    } else {
+      toast(`${body.placa} adicionado com IMEI ✅`,'ok');
+      renderVeiculos(document.getElementById('mainContent'));
+      loadVehicles();
+    }
+  } catch(e) { toast(e.message,'err'); }
+}
+
+function openEditVeiculo(v) {
+  document.getElementById('mTitle').textContent = 'Editar veículo';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Placa</label><input id="evPlaca" value="${v.placa}" disabled style="opacity:.5"/></div>
+    <div class="mf"><label>IMEI do rastreador</label><input id="evImei" value="${v.imei||''}"/></div>
+    <div class="mf"><label>Modelo</label><input id="evModelo" value="${v.modelo||''}"/></div>
+    <div class="mf-row">
+      <div class="mf"><label>Ano</label><input id="evAno" type="number" value="${v.ano||2024}"/></div>
+      <div class="mf"><label>Cor</label><input id="evCor" value="${v.cor||''}"/></div>
+    </div>
+    <button class="mbtn" onclick="updateVeiculo(${v.id})">Salvar</button>
+    <button class="mbtn sec" onclick="if(confirm('Remover veículo?'))deleteVeiculo(${v.id})">🗑 Remover</button>`;
+  openModal();
+}
+
+async function updateVeiculo(id) {
+  try {
+    await api('PUT',`/api/veiculos/${id}`,{
+      imei: document.getElementById('evImei').value.trim()||null,
+      modelo: document.getElementById('evModelo').value.trim(),
+      ano: parseInt(document.getElementById('evAno').value)||2024,
+      cor: document.getElementById('evCor').value.trim(),
+    });
+    closeModal(); toast('Veículo atualizado ✅','ok');
+    renderVeiculos(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function deleteVeiculo(id) {
+  try {
+    await api('DELETE',`/api/veiculos/${id}`);
+    closeModal(); toast('Veículo removido','ok');
+    renderVeiculos(document.getElementById('mainContent'));
+    loadVehicles();
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function showDemoLink(compId) {
+  try {
+    const comps = await api('GET', '/api/compartilhamentos');
+    const comp = comps.find(c => c.id === compId);
+    if (!comp) return toast('Link não encontrado','err');
+    const link = window.location.origin + '/track/' + comp.token;
+    document.getElementById('mTitle').textContent = '📱 Link de Rastreamento';
+    document.getElementById('mBody').innerHTML = `
+      <div style="text-align:center;padding:20px">
+        <div style="background:var(--s2);padding:16px;border-radius:8px;margin-bottom:16px">
+          <div style="font-size:11px;color:var(--t3);margin-bottom:6px">LINK (7 DIAS DE TESTE)</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12px;word-break:break-all;background:var(--s1);padding:12px;border-radius:4px;margin-bottom:10px">${link}</div>
+          <button class="mbtn" onclick="copyToClipboard('${link}'); toast('Link copiado!','ok')">📋 Copiar Link</button>
+        </div>
+        <div style="font-size:12px;color:var(--t2)">
+          ✅ Compartilhe com seu cliente via WhatsApp ou Email<br>Cliente abre no celular para rastrear!
+        </div>
+        <button class="mbtn sec" onclick="closeModal()" style="margin-top:16px">Fechar</button>
+      </div>`;
+    openModal();
+  } catch(e) { toast(e.message,'err'); }
+}
+
+/* ─── ALERTAS ─── */
+async function renderAlertas(c) {
+  c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
+  if (CU.role==='admin') { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">🔔</div><div class="et">Alertas são configurados por cliente</div></div></div>`; return; }
+  try {
+    const prefs = await api('GET','/api/alertas');
+    const ALERTAS = [
+      {k:'velocidade',ic:'⚡',nome:'Excesso de velocidade',desc:'Quando ultrapassar o limite'},
+      {k:'bloqueio',  ic:'🔒',nome:'Bloqueio / Desbloqueio',desc:'Quando a ignição for bloqueada'},
+      {k:'geocerca',  ic:'📍',nome:'Saída de geocerca',     desc:'Quando sair da área configurada'},
+      {k:'offline',   ic:'📵',nome:'Veículo offline',        desc:'Sem sinal por mais de 30 min'},
+      {k:'horario',   ic:'🔑',nome:'Ignição fora do horário',desc:'Ligou fora do turno configurado'},
+    ];
+    c.innerHTML = `<div class="pp">
+      <div class="sec-title">Alertas por email</div>
+      <div class="cfg-section" style="margin-bottom:12px">
+        <div class="cfg-title">Email para receber alertas</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="alertEmail" value="${prefs.email_alertas||''}" style="flex:1;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--t1);font-family:Inter,sans-serif;outline:none;" placeholder="email@empresa.com"/>
+          <button onclick="salvarAlertas()" style="padding:10px 14px;background:var(--red);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">Salvar</button>
+        </div>
+      </div>
+      ${ALERTAS.map(a => `
+        <div class="alert-item">
+          <div class="alert-top">
+            <span class="alert-ic">${a.ic}</span>
+            <div style="flex:1"><div class="alert-name">${a.nome}</div><div class="alert-desc">${a.desc}</div></div>
+            <div class="toggle${prefs[a.k]?' on':''}" id="tog_${a.k}" onclick="this.classList.toggle('on')"></div>
+          </div>
+        </div>`).join('')}
+      <button class="add-btn" style="width:100%;padding:12px;border-radius:8px;font-size:13px;margin-top:4px" onclick="salvarAlertas()">Salvar preferências</button>
+    </div>`;
+  } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+async function salvarAlertas() {
+  const body = {
+    email_alertas: document.getElementById('alertEmail').value.trim(),
+    velocidade: document.getElementById('tog_velocidade')?.classList.contains('on'),
+    bloqueio:   document.getElementById('tog_bloqueio')?.classList.contains('on'),
+    geocerca:   document.getElementById('tog_geocerca')?.classList.contains('on'),
+    offline:    document.getElementById('tog_offline')?.classList.contains('on'),
+    horario:    document.getElementById('tog_horario')?.classList.contains('on'),
+  };
+  try {
+    await api('PUT','/api/alertas',body);
+    toast('Preferências salvas ✅','ok');
+  } catch(e) { toast(e.message,'err'); }
+}
+
+/* ─── FINANCEIRO ─── */
+let FIN_DATA = [];
+const MESES_ABR = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+function fmtMes(m){ if(!m) return '—'; const [a,x]=m.split('-').map(Number); return MESES_ABR[x-1]+'/'+a; }
+function moeda(v){ return 'R$ '+(parseFloat(v)||0).toFixed(2).replace('.',','); }
+
+// Como o cliente é cobrado (descrição) e estimativa mensal (rate × veículos quando aplicável)
+function cobrancaLabel(cl){
+  if(cl.plano==='cortesia') return 'Cortesia · grátis';
+  if(cl.plano==='track')    return 'Track · R$ 29,90/veículo';
+  const v = moeda(cl.valor_plano);
+  return cl.cobranca_modo==='por_veiculo' ? `Personalizado · ${v}/veículo` : `Personalizado · ${v}/mês`;
+}
+function estimativaMensal(cl){
+  const q = parseInt(cl.qtd_veiculos)||0;
+  if(cl.plano==='cortesia') return 0;
+  if(cl.plano==='track')    return 29.90*q;
+  const v = parseFloat(cl.valor_plano)||0;
+  return cl.cobranca_modo==='por_veiculo' ? v*q : v;
+}
+
+/* ─── COMPARTILHAMENTOS (Demo / Location Sharing) ─── */
+async function renderCompartilhamentos(c) {
+  c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
+  try {
+    const comps = await api('GET','/api/compartilhamentos');
+    c.innerHTML = `<div class="pp">
+      <div class="sec-title">Demo com Localização de Celular <span style="color:var(--t2);font-size:11px;font-weight:400">${comps.length}</span><button class="add-btn" onclick="openAddCompartilhamento()">＋ Nova Demo</button></div>
+      ${!comps.length ? `<div class="empty"><div class="ei">📱</div><div class="et">Nenhuma demo ativa</div><div class="es">Crie uma nova demo para compartilhar com seus clientes</div></div>` :
+        comps.map(comp => {
+          const link = window.location.origin + '/track/' + comp.token;
+          const statusColor = comp.ultimo_update && new Date(comp.ultimo_update) > new Date(Date.now()-60000) ? 'online' : 'offline';
+          const statusTxt = statusColor === 'online' ? '🟢 Ativo agora' : '⚪ Inativo';
+          return `<div class="card">
+            <div class="card-top">
+              <div class="card-info">
+                <div class="card-title">${comp.nome}</div>
+                <div class="card-sub" style="font-family:'JetBrains Mono',monospace;font-size:11px;word-break:break-all">${link}</div>
+              </div>
+              <span class="badge badge-${statusColor}">${statusTxt}</span>
+            </div>
+            <div class="kpis-row">
+              <div class="kpi-box"><div class="v" style="font-size:12px">${comp.latitude?comp.latitude.toFixed(4):'—'}</div><div class="l">Lat</div></div>
+              <div class="kpi-box"><div class="v" style="font-size:12px">${comp.longitude?comp.longitude.toFixed(4):'—'}</div><div class="l">Lng</div></div>
+              <div class="kpi-box"><div class="v" style="font-size:11px;color:var(--t2)">${comp.ultimo_update?new Date(comp.ultimo_update).toLocaleTimeString('pt-BR'):'—'}</div><div class="l">Hora</div></div>
+            </div>
+            <div class="acts-row">
+              <div class="act-btn blue" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>
+              <div class="act-btn red" onclick="if(confirm('Remover esta demo?'))deleteCompartilhamento(${comp.id})">🗑 Remover</div>
+            </div>
+          </div>`;
+        }).join('')}
+    </div>`;
+  } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+async function openAddCompartilhamento() {
+  let clientes = [];
+  try { clientes = await api('GET','/api/clientes'); } catch(e){}
+  document.getElementById('mTitle').textContent = 'Nova Demo com Localização';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Nome da Demo</label><input id="compNome" placeholder="Ex: Demo Felipe Sousa"/></div>
+    <div class="mf"><label>Cliente</label>
+      <select id="compCliente">
+        ${clientes.map(cl=>`<option value="${cl.id}">${cl.nome}</option>`).join('')}
+      </select>
+    </div>
+    <div style="font-size:12px;color:var(--t2);margin:12px 0;padding:12px;background:var(--s2);border-radius:8px">
+      📱 Um link será gerado para o cliente abrir no celular. Ele vai pedir permissão de GPS e enviar a localização em tempo real no mapa.
+    </div>
+    <button class="mbtn" onclick="saveCompartilhamento()">Criar Demo</button>`;
+  openModal();
+}
+
+async function saveCompartilhamento() {
+  const nome = document.getElementById('compNome').value.trim();
+  const cliente_id = parseInt(document.getElementById('compCliente').value);
+  if (!nome) return toast('Nome é obrigatório','err');
+  try {
+    await api('POST','/api/compartilhamentos',{nome,cliente_id});
+    closeModal(); toast(`Demo "${nome}" criada ✅`,'ok');
+    renderCompartilhamentos(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function deleteCompartilhamento(id) {
+  try {
+    await api('DELETE',`/api/compartilhamentos/${id}`);
+    toast('Demo removida','ok');
+    renderCompartilhamentos(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+function copyToClipboard(text) {
+  navigator.clipboard.writeText(text).then(() => toast('Link copiado! 📋','ok')).catch(() => toast('Erro ao copiar','err'));
+}
+
+async function renderFinanceiro(c) {
+  c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
+  try {
+    const d = await api('GET','/api/financeiro');
+    FIN_DATA = d.clientes;
+    const planoLabel = {cortesia:'Cortesia',track:'Track',personalizado:'Personalizado'};
+    c.innerHTML = `<div class="pp">
+      <div class="sec-title">Financeiro</div>
+      <div class="cfg-section" style="margin-bottom:12px">
+        <div class="cfg-title">Chave PIX</div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:600;margin-top:4px">${d.pix}</div>
+        <div style="font-size:10px;color:var(--t2);margin-top:4px">CNPJ — Felogix</div>
+      </div>
+      <div class="fin-acts" style="margin-bottom:16px">
+        <div class="act-btn blue" onclick="renderCobrancas(document.getElementById('mainContent'))">🧾 Cobranças do mês</div>
+        <div class="act-btn" onclick="abrirHistoricoEmails()">📜 E-mails enviados</div>
+      </div>
+      ${!d.clientes.length ? `<div class="empty"><div class="ei">💰</div><div class="et">Nenhum cliente ativo</div></div>` :
+        d.clientes.map(cl => {
+          const ultp = cl.pagamentos?.[0];
+          const est  = estimativaMensal(cl);
+          return `<div class="fin-card">
+            <div class="fin-top">
+              <div>
+                <div class="fin-nome">${cl.nome}</div>
+                <div class="fin-info">${cl.qtd_veiculos} veículo(s) · vence dia ${cl.dia_vencimento}</div>
+              </div>
+              <span class="badge badge-blue">${planoLabel[cl.plano]||cl.plano}</span>
+            </div>
+            <div class="fin-valor">${est>0?moeda(est):'—'}</div>
+            <div class="fin-info">${cobrancaLabel(cl)}</div>
+            <div class="fin-info" style="margin-top:4px">${ultp?`Última fatura: ${fmtMes(ultp.mes_ref)} · ${ultp.pago?'✅ Pago':'⏳ Aguardando'}` : 'Nenhuma fatura ainda'}</div>
+            <div class="fin-acts">
+              <div class="act-btn" onclick="abrirHistorico(${cl.id})">📋 Histórico</div>
+              ${ultp&&!ultp.pago&&parseFloat(ultp.valor)>0?`<div class="act-btn green" onclick="marcarPago(${ultp.id})">✅ Marcar pago</div>`:''}
+            </div>
+          </div>`;
+        }).join('')}
+    </div>`;
+  } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+function abrirHistorico(id){
+  const cl = FIN_DATA.find(x => x.id===id); if(!cl) return;
+  const pags = cl.pagamentos || [];
+  document.getElementById('mTitle').textContent = 'Histórico — '+cl.nome;
+  document.getElementById('mBody').innerHTML = pags.length ? pags.map(p => `
+    <div class="cfg-row">
+      <div>
+        <div class="cfg-label">${fmtMes(p.mes_ref)}</div>
+        <div class="cfg-sub">${p.pago ? ('✅ Pago'+(p.data_pagamento?' em '+new Date(p.data_pagamento).toLocaleDateString('pt-BR'):'')) : '⏳ Aguardando'}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-family:'JetBrains Mono',monospace;font-weight:600">${moeda(p.valor)}</div>
+        ${!p.pago&&parseFloat(p.valor)>0?`<div class="act-btn green" style="margin-top:4px;padding:4px 8px" onclick="marcarPago(${p.id});closeModal()">Marcar pago</div>`:''}
+      </div>
+    </div>`).join('') : `<div class="empty"><div class="ei">🧾</div><div class="et">Nenhuma fatura ainda</div></div>`;
+  openModal();
+}
+
+/* ─── COBRANÇAS DO MÊS (revisar → selecionar → enviar) ─── */
+let LOTE = null;
+function escHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function shiftMes(mes, delta){ const [a,m]=mes.split('-').map(Number); const d=new Date(a,m-1+delta,1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
+function aplicarVarsJS(t, cl){
+  return String(t==null?'':t).replace(/\{nome\}/g,cl.nome).replace(/\{valor\}/g,moeda(cl._valor))
+    .replace(/\{mes\}/g,fmtMes(LOTE.mes_ref)).replace(/\{pix\}/g,LOTE.pix||'');
+}
+function capturarTemplate(){
+  const a=document.getElementById('cobAssunto'), b=document.getElementById('cobCorpo');
+  if(a) LOTE.template.assunto=a.value;
+  if(b) LOTE.template.corpo=b.value;
+}
+
+async function renderCobrancas(c, mes){
+  c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
+  try {
+    const d = await api('GET','/api/financeiro/rascunhos'+(mes?('?mes='+mes):''));
+    d.clientes.forEach(cl => { cl._sel = !cl.ja_enviado && cl.email_ok && (cl.cortesia || cl.valor>0); cl._valor = cl.valor; cl._assunto=null; cl._corpo=null; });
+    LOTE = d;
+    renderCobrancasUI(c);
+  } catch(e){ c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+function renderCobrancasUI(c){
+  const d = LOTE;
+  const cob = d.clientes.filter(x=>!x.cortesia);
+  const cor = d.clientes.filter(x=>x.cortesia);
+  const sel = d.clientes.filter(x=>x._sel && !x.ja_enviado);
+  const total = sel.filter(x=>!x.cortesia).reduce((s,x)=>s+(parseFloat(x._valor)||0),0);
+  c.innerHTML = `<div class="pp">
+    <div class="sec-title"><span style="cursor:pointer" onclick="goTab('financeiro')">‹ Cobranças</span></div>
+    <div class="cfg-section" style="margin-bottom:12px;display:flex;align-items:center;justify-content:space-between">
+      <div class="act-btn" onclick="renderCobrancas(document.getElementById('mainContent'),'${shiftMes(d.mes_ref,-1)}')">‹ mês</div>
+      <div style="font-weight:700;text-transform:capitalize">${fmtMes(d.mes_ref)}</div>
+      <div class="act-btn" onclick="renderCobrancas(document.getElementById('mainContent'),'${shiftMes(d.mes_ref,1)}')">mês ›</div>
+    </div>
+    <div class="cfg-section" style="margin-bottom:12px">
+      <div class="cfg-title">Modelo do e-mail (vale pra todos)</div>
+      <div class="mf"><label>Assunto</label><input id="cobAssunto" value="${(d.template.assunto||'').replace(/"/g,'&quot;')}"/></div>
+      <div class="mf"><label>Mensagem</label><textarea id="cobCorpo" rows="5" style="width:100%;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:11px 12px;font-size:13px;color:var(--t1);font-family:Inter,sans-serif;outline:none;resize:vertical">${escHtml(d.template.corpo||'')}</textarea></div>
+      <div class="cfg-sub">Variáveis: <code>{nome}</code> <code>{valor}</code> <code>{mes}</code> <code>{pix}</code> — o valor e a chave PIX já entram no rodapé automaticamente.</div>
+    </div>
+    <div class="sec-title">Cobranças <span style="color:var(--t2);font-size:11px;font-weight:400">${cob.length}</span></div>
+    ${cob.length ? cob.map(cl=>linhaCobranca(cl)).join('') : `<div class="empty"><div class="ei">💰</div><div class="et">Nenhuma cobrança neste mês</div></div>`}
+    ${cor.length ? `<div class="sec-title" style="margin-top:16px">Cortesia <span style="color:var(--t2);font-size:11px;font-weight:400">${cor.length}</span></div>${cor.map(cl=>linhaCortesia(cl)).join('')}` : ''}
+    <div class="cfg-section" style="position:sticky;bottom:8px;margin-top:16px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+        <span class="cfg-sub">${sel.length} selecionado(s)</span>
+        <span style="font-weight:700">${moeda(total)}</span>
+      </div>
+      <button class="mbtn" onclick="enviarLote()">📤 Enviar selecionados (${sel.length})</button>
+    </div>
+  </div>`;
+}
+
+function linhaCobranca(cl){
+  const i = LOTE.clientes.indexOf(cl);
+  const trava = cl.ja_enviado || !cl.email_ok;
+  const warn = cl.email_ok ? '' : `<span style="color:var(--red)"> ⚠ sem e-mail válido</span>`;
+  const editado = (cl._assunto!==null || cl._corpo!==null) ? ' ✓' : '';
+  return `<div class="card" style="${cl.ja_enviado?'opacity:.55':''}">
+    <div class="card-top">
+      <div class="toggle ${cl._sel?'on':''}" onclick="toggleSel(${i})" ${trava?'style="pointer-events:none;opacity:.4"':''}></div>
+      <div class="card-info" style="margin-left:8px">
+        <div class="card-title" style="font-family:Inter,sans-serif;font-size:14px">${cl.nome}</div>
+        <div class="card-sub">${cl.email||'—'}${warn} · ${cl.qtd} veíc.</div>
+      </div>
+      ${cl.ja_enviado?`<span class="badge badge-green">✅ enviado</span>`:''}
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
+      <span class="cfg-sub" style="white-space:nowrap">Valor R$</span>
+      <input type="number" step="0.01" value="${(parseFloat(cl._valor)||0).toFixed(2)}" onchange="setValor(${i},this.value)" ${cl.ja_enviado?'disabled':''} style="flex:1;background:var(--s2);border:1px solid var(--b1);border-radius:7px;padding:8px;color:var(--t1);font-family:'JetBrains Mono',monospace;outline:none"/>
+      <div class="act-btn" onclick="editarEmailCliente(${i})">✏️ Texto${editado}</div>
+    </div>
+  </div>`;
+}
+
+function linhaCortesia(cl){
+  const i = LOTE.clientes.indexOf(cl);
+  const trava = cl.ja_enviado || !cl.email_ok;
+  const warn = cl.email_ok ? '' : `<span style="color:var(--red)"> ⚠ sem e-mail válido</span>`;
+  return `<div class="card" style="${cl.ja_enviado?'opacity:.55':''}">
+    <div class="card-top">
+      <div class="toggle ${cl._sel?'on':''}" onclick="toggleSel(${i})" ${trava?'style="pointer-events:none;opacity:.4"':''}></div>
+      <div class="card-info" style="margin-left:8px">
+        <div class="card-title" style="font-family:Inter,sans-serif;font-size:14px">${cl.nome}</div>
+        <div class="card-sub">${cl.email||'—'}${warn} · agradecimento</div>
+      </div>
+      ${cl.ja_enviado?`<span class="badge badge-green">✅ enviado</span>`:`<span class="badge badge-gray">cortesia</span>`}
+    </div>
+  </div>`;
+}
+
+function toggleSel(i){ const cl=LOTE.clientes[i]; if(cl.ja_enviado||!cl.email_ok) return; capturarTemplate(); cl._sel=!cl._sel; renderCobrancasUI(document.getElementById('mainContent')); }
+function setValor(i,v){ capturarTemplate(); LOTE.clientes[i]._valor=parseFloat(v)||0; renderCobrancasUI(document.getElementById('mainContent')); }
+
+function editarEmailCliente(i){
+  capturarTemplate();
+  const cl=LOTE.clientes[i];
+  const assunto = cl._assunto!==null ? cl._assunto : (LOTE.template.assunto||'');
+  const corpo   = cl._corpo!==null   ? cl._corpo   : (LOTE.template.corpo||'');
+  document.getElementById('mTitle').textContent='E-mail — '+cl.nome;
+  document.getElementById('mBody').innerHTML = `
+    <div class="cfg-sub" style="margin-bottom:10px">Personalize só para este cliente, ou deixe igual ao modelo para usar o padrão.</div>
+    <div class="mf"><label>Assunto</label><input id="edAssunto" value="${assunto.replace(/"/g,'&quot;')}"/></div>
+    <div class="mf"><label>Mensagem</label><textarea id="edCorpo" rows="6" style="width:100%;background:var(--s2);border:1px solid var(--b1);border-radius:8px;padding:11px 12px;font-size:13px;color:var(--t1);font-family:Inter,sans-serif;outline:none;resize:vertical">${escHtml(corpo)}</textarea></div>
+    <div class="cfg-sub" style="margin:6px 0">Prévia: <i>${escHtml(aplicarVarsJS(corpo, cl))}</i></div>
+    <button class="mbtn" onclick="salvarEmailCliente(${i})">Salvar texto deste cliente</button>
+    <button class="mbtn sec" onclick="limparEmailCliente(${i})">Usar o modelo padrão</button>`;
+  openModal();
+}
+function salvarEmailCliente(i){ const cl=LOTE.clientes[i]; cl._assunto=document.getElementById('edAssunto').value; cl._corpo=document.getElementById('edCorpo').value; closeModal(); renderCobrancasUI(document.getElementById('mainContent')); }
+function limparEmailCliente(i){ const cl=LOTE.clientes[i]; cl._assunto=null; cl._corpo=null; closeModal(); renderCobrancasUI(document.getElementById('mainContent')); }
+
+async function enviarLote(){
+  capturarTemplate();
+  const sel = LOTE.clientes.filter(x=>x._sel && !x.ja_enviado);
+  if(!sel.length) return toast('Selecione ao menos um cliente','err');
+  if(!confirm(`Enviar ${sel.length} e-mail(s) referente a ${fmtMes(LOTE.mes_ref)}?`)) return;
+  const itens = sel.map(cl => ({ cliente_id: cl.cliente_id, valor: cl._valor, assunto: cl._assunto||undefined, corpo: cl._corpo||undefined }));
+  try {
+    const r = await api('POST','/api/financeiro/enviar',{ mes_ref: LOTE.mes_ref, template: LOTE.template, itens });
+    let msg = `${r.enviados} e-mail(s) enviado(s)`;
+    if(r.falhas&&r.falhas.length) msg += ` · ${r.falhas.length} falha(s)`;
+    toast(msg, (r.falhas&&r.falhas.length)?'err':'ok');
+    renderCobrancas(document.getElementById('mainContent'), LOTE.mes_ref);
+  } catch(e){ toast(e.message,'err'); }
+}
+
+async function abrirHistoricoEmails(){
+  document.getElementById('mTitle').textContent='E-mails enviados';
+  document.getElementById('mBody').innerHTML=`<div class="loading"><div class="spinner"></div>Carregando…</div>`;
+  openModal();
+  try {
+    const logs = await api('GET','/api/financeiro/emails');
+    document.getElementById('mBody').innerHTML = logs.length ? logs.map(l => `
+      <div class="cfg-row">
+        <div>
+          <div class="cfg-label">${l.cliente_nome||l.email||'—'}</div>
+          <div class="cfg-sub">${fmtMes(l.mes_ref)} · ${l.tipo==='cortesia'?'cortesia':moeda(l.valor)} · ${new Date(l.enviado_em).toLocaleString('pt-BR')}</div>
+        </div>
+        <span class="badge ${l.tipo==='cortesia'?'badge-gray':'badge-green'}">${l.tipo}</span>
+      </div>`).join('') : `<div class="empty"><div class="ei">📭</div><div class="et">Nenhum e-mail enviado ainda</div></div>`;
+  } catch(e){ document.getElementById('mBody').innerHTML=`<div class="empty"><div class="et">${e.message}</div></div>`; }
+}
+
+async function marcarPago(pagId) {
+  try {
+    await api('POST','/api/financeiro/pago',{pagamento_id:pagId});
+    toast('Pagamento confirmado ✅','ok');
+    renderFinanceiro(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+/* ─── ALTERAR SENHA ─── */
+function openAlterarSenha() {
+  if (CU.role==='admin') { toast('Altere a senha diretamente no código','err'); return; }
+  document.getElementById('mTitle').textContent = 'Alterar senha';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Senha atual</label><input type="password" id="senhaAtual"/></div>
+    <div class="mf"><label>Nova senha</label><input type="password" id="senhaNova"/></div>
+    <div class="mf"><label>Confirmar nova senha</label><input type="password" id="senhaConf"/></div>
+    <button class="mbtn" onclick="salvarSenha()">Alterar senha</button>`;
+  openModal();
+}
+
+async function salvarSenha() {
+  const atual = document.getElementById('senhaAtual').value;
+  const nova  = document.getElementById('senhaNova').value;
+  const conf  = document.getElementById('senhaConf').value;
+  if (nova !== conf) return toast('As senhas não coincidem','err');
+  if (nova.length < 6) return toast('Senha muito curta','err');
+  try {
+    await api('POST','/api/alterar-senha',{senha_atual:atual,nova_senha:nova});
+    closeModal(); toast('Senha alterada ✅','ok');
+  } catch(e) { toast(e.message,'err'); }
+}
+
+/* ─── MODAL / UTILS ─── */
+function openModal() { document.getElementById('modalOv').classList.add('open'); }
+function closeModal() { document.getElementById('modalOv').classList.remove('open'); }
+function toggleAvMenu() { document.getElementById('avMenu').classList.toggle('open'); }
+function closeAvMenu() { document.getElementById('avMenu').classList.remove('open'); }
+document.addEventListener('click', e => { if (!e.target.closest('#tbAv')&&!e.target.closest('#avMenu')) closeAvMenu(); });
+
+let toastTimer;
+function toast(msg, type='') {
+  const t = document.getElementById('toast');
+  t.textContent=msg; t.className='toast show'+(type?' '+type:'');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+// Auto-login se tiver token
+async function autoLogin() {
+  if (!TOKEN) return;
+  try {
+    const opts = { method:'GET', headers:{ 'Authorization':'Bearer '+TOKEN } };
+    const r = await fetch('/api/verify-token', opts);
+    if (!r.ok) throw new Error('Token inválido');
+    const d = await r.json();
+    CU = d;
+    initApp();
+  } catch(e) {
+    TOKEN = ''; localStorage.removeItem('flx_token');
+  }
+}
+autoLogin();
+</script>
+</body>
+</html>

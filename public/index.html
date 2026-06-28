@@ -154,6 +154,10 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
 .add-btn{font-size:11px;font-weight:600;padding:5px 12px;background:var(--red);color:#fff;border:none;border-radius:6px;cursor:pointer;}
 .card{background:var(--s1);border:1px solid var(--b1);border-radius:12px;padding:14px;margin-bottom:8px;}
 .card-top{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+.thumb{width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0;background:var(--s2);border:1px solid var(--b1);}
+.thumb-ph{width:40px;height:40px;border-radius:50%;flex-shrink:0;background:var(--s2);border:1px solid var(--b1);display:flex;align-items:center;justify-content:center;font-size:16px;}
+.thumb-lg{width:56px;height:56px;border-radius:14px;object-fit:cover;flex-shrink:0;background:var(--s2);border:1px solid var(--b1);}
+.thumb-lg-ph{width:56px;height:56px;border-radius:14px;flex-shrink:0;background:var(--s2);border:1px solid var(--b1);display:flex;align-items:center;justify-content:center;font-size:22px;}
 .card-info{flex:1;}
 .card-title{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;}
 .card-sub{font-size:10px;color:var(--t2);margin-top:2px;}
@@ -324,6 +328,22 @@ async function api(method, path, body) {
   return d;
 }
 
+// Igual a api(), mas envia FormData (upload de foto) em vez de JSON
+async function apiUpload(method, path, formData) {
+  const opts = { method, body: formData, headers: {} };
+  if (TOKEN) opts.headers['Authorization'] = 'Bearer ' + TOKEN;
+  const r = await fetch(API + path, opts);
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.erro || 'Erro');
+  return d;
+}
+
+function thumbHtml(foto, emoji, size) {
+  const cls = size==='lg' ? 'thumb-lg' : 'thumb';
+  const clsPh = size==='lg' ? 'thumb-lg-ph' : 'thumb-ph';
+  return foto ? `<img class="${cls}" src="${foto}">` : `<div class="${clsPh}">${emoji}</div>`;
+}
+
 /* ─── LOGIN ─── */
 async function doLogin() {
   const email = document.getElementById('lEmail').value.trim();
@@ -402,7 +422,7 @@ function buildNav() {
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
     {ic:'👥',lbl:'Clientes',id:'clientes'},
     {ic:'🚗',lbl:'Veículos',id:'veiculos'},
-    {ic:'📱',lbl:'Demo',id:'compartilhamentos'},
+    {ic:'👨‍👩‍👧',lbl:'Pessoas',id:'compartilhamentos'},
     {ic:'💰',lbl:'Financeiro',id:'financeiro'},
   ];
   const gestorTabs = [
@@ -490,8 +510,8 @@ function updateMapList() {
   }).join('');
   const compsHtml = COMPARTILHAMENTOS.filter(c => c.latitude && c.longitude).map(c => {
     const dotC = c.ultimo_update && new Date(c.ultimo_update) > new Date(Date.now()-60000) ? 'moving' : 'offline';
-    return `<div class="vmc" style="background:rgba(255,152,0,.1)">
-      <div class="vmc-r1"><div class="sdot ${dotC}"></div><div style="flex:1"><div class="vmc-plate" style="font-size:11px">📱 ${c.nome}</div><div style="font-size:9px;color:var(--t2)">${c.latitude?.toFixed(4)} ${c.longitude?.toFixed(4)}</div></div></div>
+    return `<div class="vmc" style="background:rgba(255,152,0,.1)" onclick="openBSPerson(${c.id})">
+      <div class="vmc-r1"><div class="sdot ${dotC}"></div><div style="flex:1"><div class="vmc-plate" style="font-size:11px">📱 ${c.nome}</div><div style="font-size:9px;color:var(--t2)">${parseFloat(c.latitude).toFixed(4)} ${parseFloat(c.longitude).toFixed(4)}</div></div></div>
     </div>`;
   }).join('');
   el.innerHTML = vehiclesHtml + compsHtml;
@@ -540,7 +560,7 @@ function syncMkrs() {
         markers[mkid].setLatLng([c.latitude,c.longitude]);
       } else {
         const mkr = L.circleMarker([c.latitude,c.longitude], {radius:6, fillColor:'#FF9800', color:'white', weight:2, opacity:1, fillOpacity:0.8});
-        mkr.bindPopup(`<div style="font-size:12px"><strong>${c.nome}</strong><br>📱 Compartilhamento ativo</div>`);
+        mkr.on('click', () => openBSPerson(c.id));
         mkr.addTo(map);
         markers[mkid] = mkr;
       }
@@ -566,6 +586,7 @@ function openBS(id) {
     : `<div class="vd-btn danger full" onclick="toggleBlock(${v.id})">🔒 Bloquear ignição</div>`;
   document.getElementById('bshContent').innerHTML = `
     <div class="vd-top">
+      ${thumbHtml(v.foto, '🚗', 'lg')}
       <div class="vd-info">
         <div class="vd-plate">${v.placa}</div>
         <div class="vd-model">${v.modelo||''} ${v.ano||''} · ${v.cor||''}</div>
@@ -590,6 +611,29 @@ function openBS(id) {
 }
 
 function closeBS() { document.getElementById('bsheet').classList.remove('open'); selV=null; syncMkrs(); }
+
+function openBSPerson(id) {
+  const c = COMPARTILHAMENTOS.find(x => x.id===id); if (!c) return;
+  if (map && c.latitude && c.longitude) map.flyTo([c.latitude,c.longitude],15,{duration:.7});
+  const online = c.ultimo_update && new Date(c.ultimo_update) > new Date(Date.now()-60000);
+  const link = window.location.origin + '/track/' + c.token;
+  document.getElementById('bshContent').innerHTML = `
+    <div class="vd-top">
+      ${thumbHtml(c.foto, '📱', 'lg')}
+      <div class="vd-info">
+        <div class="vd-plate">${c.nome}</div>
+        <div class="vd-model">Rastreamento por link</div>
+        <div class="vd-status ${online?'moving':'offline'}">${online?'🟢 Ativo agora':'⚪ Offline'}</div>
+      </div>
+      <div class="vd-close" onclick="closeBS()">✕</div>
+    </div>
+    <div class="vd-addr">📍 <span style="color:var(--t1)">${c.latitude?parseFloat(c.latitude).toFixed(4)+', '+parseFloat(c.longitude).toFixed(4):'Aguardando localização…'}</span></div>
+    <div class="vd-acts">
+      <div class="vd-btn" onclick="closeBS()">✕ Fechar</div>
+      <div class="vd-btn" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>
+    </div>`;
+  document.getElementById('bsheet').classList.add('open');
+}
 
 async function toggleBlock(id) {
   const v = VEHICLES.find(x => x.id===id); if (!v) return;
@@ -818,6 +862,7 @@ async function renderVeiculos(c) {
 
           return `<div class="card">
             <div class="card-top">
+              ${thumbHtml(v.foto, '🚗', 'sm')}
               <div class="card-info">
                 <div class="card-title">${v.placa}</div>
                 <div class="card-sub">${v.modelo||'—'} ${v.ano||''} · ${v.cor||'—'}</div>
@@ -877,6 +922,7 @@ async function openAddVeiculo() {
         ${clientes.map(cl=>`<option value="${cl.id}">${cl.nome}</option>`).join('')}
       </select>
     </div>
+    <div class="mf"><label>Foto do veículo (opcional)</label><input id="vFoto" type="file" accept="image/jpeg,image/png,image/webp"/></div>
     <button class="mbtn" onclick="saveVeiculo()">Adicionar veículo</button>`;
   openModal();
 }
@@ -901,7 +947,16 @@ async function saveVeiculo() {
   };
   if (!body.placa||!body.cliente_id) return toast('Placa e cliente são obrigatórios','err');
   try {
-    const resultado = await api('POST','/api/veiculos',body);
+    const arquivoFoto = document.getElementById('vFoto')?.files[0];
+    let resultado;
+    if (arquivoFoto) {
+      const fd = new FormData();
+      Object.entries(body).forEach(([k,v]) => fd.append(k, v ?? ''));
+      fd.append('foto', arquivoFoto);
+      resultado = await apiUpload('POST','/api/veiculos',fd);
+    } else {
+      resultado = await api('POST','/api/veiculos',body);
+    }
     closeModal();
 
     if (resultado.demo_link) {
@@ -935,6 +990,7 @@ async function saveVeiculo() {
 function openEditVeiculo(v) {
   document.getElementById('mTitle').textContent = 'Editar veículo';
   document.getElementById('mBody').innerHTML = `
+    <div style="display:flex;justify-content:center;margin-bottom:12px">${thumbHtml(v.foto,'🚗','lg')}</div>
     <div class="mf"><label>Placa</label><input id="evPlaca" value="${v.placa}" disabled style="opacity:.5"/></div>
     <div class="mf"><label>IMEI do rastreador</label><input id="evImei" value="${v.imei||''}"/></div>
     <div class="mf"><label>Modelo</label><input id="evModelo" value="${v.modelo||''}"/></div>
@@ -942,6 +998,7 @@ function openEditVeiculo(v) {
       <div class="mf"><label>Ano</label><input id="evAno" type="number" value="${v.ano||2024}"/></div>
       <div class="mf"><label>Cor</label><input id="evCor" value="${v.cor||''}"/></div>
     </div>
+    <div class="mf"><label>${v.foto?'Trocar foto':'Adicionar foto'}</label><input id="evFoto" type="file" accept="image/jpeg,image/png,image/webp"/></div>
     <button class="mbtn" onclick="updateVeiculo(${v.id})">Salvar</button>
     <button class="mbtn sec" onclick="if(confirm('Remover veículo?'))deleteVeiculo(${v.id})">🗑 Remover</button>`;
   openModal();
@@ -949,12 +1006,21 @@ function openEditVeiculo(v) {
 
 async function updateVeiculo(id) {
   try {
-    await api('PUT',`/api/veiculos/${id}`,{
+    const arquivoFoto = document.getElementById('evFoto')?.files[0];
+    const campos = {
       imei: document.getElementById('evImei').value.trim()||null,
       modelo: document.getElementById('evModelo').value.trim(),
       ano: parseInt(document.getElementById('evAno').value)||2024,
       cor: document.getElementById('evCor').value.trim(),
-    });
+    };
+    if (arquivoFoto) {
+      const fd = new FormData();
+      Object.entries(campos).forEach(([k,v]) => fd.append(k, v ?? ''));
+      fd.append('foto', arquivoFoto);
+      await apiUpload('PUT',`/api/veiculos/${id}`,fd);
+    } else {
+      await api('PUT',`/api/veiculos/${id}`,campos);
+    }
     closeModal(); toast('Veículo atualizado ✅','ok');
     renderVeiculos(document.getElementById('mainContent'));
   } catch(e) { toast(e.message,'err'); }
@@ -1063,39 +1129,150 @@ function estimativaMensal(cl){
   return cl.cobranca_modo==='por_veiculo' ? v*q : v;
 }
 
-/* ─── COMPARTILHAMENTOS (Demo / Location Sharing) ─── */
+/* ─── PESSOAS (Grupos de rastreamento por link + links rápidos) ─── */
 async function renderCompartilhamentos(c) {
   c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
   try {
-    const comps = await api('GET','/api/compartilhamentos');
+    const [grupos, comps] = await Promise.all([
+      api('GET','/api/grupos'),
+      api('GET','/api/compartilhamentos'),
+    ]);
+    const livres = comps.filter(comp => !comp.grupo_id);
     c.innerHTML = `<div class="pp">
-      <div class="sec-title">Demo com Localização de Celular <span style="color:var(--t2);font-size:11px;font-weight:400">${comps.length}</span><button class="add-btn" onclick="openAddCompartilhamento()">＋ Nova Demo</button></div>
-      ${!comps.length ? `<div class="empty"><div class="ei">📱</div><div class="et">Nenhuma demo ativa</div><div class="es">Crie uma nova demo para compartilhar com seus clientes</div></div>` :
-        comps.map(comp => {
+      <div class="sec-title">Grupos de Pessoas <span style="color:var(--t2);font-size:11px;font-weight:400">${grupos.length}</span><button class="add-btn" onclick="openAddGrupo()">＋ Novo Grupo</button></div>
+      ${!grupos.length ? `<div class="empty"><div class="ei">👨‍👩‍👧</div><div class="et">Nenhum grupo criado</div><div class="es">Crie um grupo (ex: Família, ou equipe de uma empresa) e adicione pessoas com link próprio</div></div>` :
+        grupos.map(g => `<div class="card">
+          <div class="card-top">
+            <div class="card-info">
+              <div class="card-title">${g.nome}</div>
+              <div class="card-sub">${g.cliente_nome} · ${g.qtd_pessoas} pessoa(s)</div>
+            </div>
+          </div>
+          <div class="acts-row">
+            <div class="act-btn blue" onclick="togglePessoas(${g.id})">👁 Ver pessoas</div>
+            <div class="act-btn" onclick="openAddPessoa(${g.id})">＋ Pessoa</div>
+            <div class="act-btn red" onclick="if(confirm('Remover grupo \\'${g.nome}\\' e todas as pessoas dele?'))deleteGrupo(${g.id})">🗑 Remover</div>
+          </div>
+          <div id="pessoas_${g.id}" style="display:none;margin-top:10px"></div>
+        </div>`).join('')}
+      <div class="sec-title" style="margin-top:20px">Links rápidos <span style="color:var(--t2);font-size:11px;font-weight:400">${livres.length}</span><button class="add-btn" onclick="openAddCompartilhamento()">＋ Novo Link</button></div>
+      ${!livres.length ? `<div class="empty"><div class="ei">📱</div><div class="et">Nenhum link avulso</div><div class="es">Crie um link rápido fora de um grupo</div></div>` :
+        livres.map(comp => {
           const link = window.location.origin + '/track/' + comp.token;
-          const statusColor = comp.ultimo_update && new Date(comp.ultimo_update) > new Date(Date.now()-60000) ? 'online' : 'offline';
-          const statusTxt = statusColor === 'online' ? '🟢 Ativo agora' : '⚪ Inativo';
+          const online = comp.ultimo_update && new Date(comp.ultimo_update) > new Date(Date.now()-60000);
           return `<div class="card">
             <div class="card-top">
+              ${thumbHtml(comp.foto, '📱', 'sm')}
               <div class="card-info">
                 <div class="card-title">${comp.nome}</div>
                 <div class="card-sub" style="font-family:'JetBrains Mono',monospace;font-size:11px;word-break:break-all">${link}</div>
               </div>
-              <span class="badge badge-${statusColor}">${statusTxt}</span>
-            </div>
-            <div class="kpis-row">
-              <div class="kpi-box"><div class="v" style="font-size:12px">${comp.latitude?comp.latitude.toFixed(4):'—'}</div><div class="l">Lat</div></div>
-              <div class="kpi-box"><div class="v" style="font-size:12px">${comp.longitude?comp.longitude.toFixed(4):'—'}</div><div class="l">Lng</div></div>
-              <div class="kpi-box"><div class="v" style="font-size:11px;color:var(--t2)">${comp.ultimo_update?new Date(comp.ultimo_update).toLocaleTimeString('pt-BR'):'—'}</div><div class="l">Hora</div></div>
+              <span class="badge ${online?'badge-green':'badge-offline'}">${online?'🟢 Ativo agora':'⚪ Inativo'}</span>
             </div>
             <div class="acts-row">
               <div class="act-btn blue" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>
-              <div class="act-btn red" onclick="if(confirm('Remover esta demo?'))deleteCompartilhamento(${comp.id})">🗑 Remover</div>
+              <div class="act-btn red" onclick="if(confirm('Remover este link?'))deleteCompartilhamento(${comp.id})">🗑 Remover</div>
             </div>
           </div>`;
         }).join('')}
     </div>`;
   } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+async function togglePessoas(grupoId) {
+  const box = document.getElementById(`pessoas_${grupoId}`);
+  if (!box) return;
+  if (box.style.display !== 'none') { box.style.display='none'; return; }
+  box.style.display = 'block';
+  box.innerHTML = `<div class="loading" style="padding:10px"><div class="spinner"></div></div>`;
+  try {
+    const pessoas = await api('GET', `/api/grupos/${grupoId}/pessoas`);
+    box.innerHTML = !pessoas.length ? `<div class="es" style="padding:6px 0">Nenhuma pessoa neste grupo ainda</div>` :
+      pessoas.map(p => {
+        const link = window.location.origin + '/track/' + p.token;
+        const online = p.ultimo_update && new Date(p.ultimo_update) > new Date(Date.now()-60000);
+        return `<div class="card" style="background:var(--s2);margin-bottom:6px">
+          <div class="card-top">
+            ${thumbHtml(p.foto, '🙂', 'sm')}
+            <div class="card-info">
+              <div class="card-title" style="font-size:13px">${p.nome}</div>
+              <div class="card-sub" style="font-family:'JetBrains Mono',monospace;font-size:10px;word-break:break-all">${link}</div>
+            </div>
+            <span class="badge ${online?'badge-green':'badge-offline'}">${online?'🟢':'⚪'}</span>
+          </div>
+          <div class="acts-row">
+            <div class="act-btn blue" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>
+            <div class="act-btn red" onclick="if(confirm('Remover ${p.nome}?'))removerPessoa(${grupoId},${p.id})">🗑 Remover</div>
+          </div>
+        </div>`;
+      }).join('');
+  } catch(e) { box.innerHTML = `<div class="es">${e.message}</div>`; }
+}
+
+async function removerPessoa(grupoId, pessoaId) {
+  try {
+    await api('DELETE', `/api/compartilhamentos/${pessoaId}`);
+    toast('Pessoa removida','ok');
+    renderCompartilhamentos(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function openAddGrupo() {
+  let clientes = [];
+  try { clientes = await api('GET','/api/clientes'); } catch(e){}
+  document.getElementById('mTitle').textContent = 'Novo Grupo de Pessoas';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Nome do Grupo</label><input id="grupoNome" placeholder="Ex: Família Andrade, Impacto Segurança"/></div>
+    <div class="mf"><label>Cliente</label>
+      <select id="grupoCliente">
+        ${clientes.map(cl=>`<option value="${cl.id}">${cl.nome}</option>`).join('')}
+      </select>
+    </div>
+    <div style="font-size:12px;color:var(--t2);margin:12px 0;padding:12px;background:var(--s2);border-radius:8px">
+      👨‍👩‍👧 Depois de criar o grupo, adicione cada pessoa (ou celular) e cada uma recebe seu próprio link de rastreamento.
+    </div>
+    <button class="mbtn" onclick="saveGrupo()">Criar Grupo</button>`;
+  openModal();
+}
+
+async function saveGrupo() {
+  const nome = document.getElementById('grupoNome').value.trim();
+  const cliente_id = parseInt(document.getElementById('grupoCliente').value);
+  if (!nome) return toast('Nome é obrigatório','err');
+  try {
+    await api('POST','/api/grupos',{nome,cliente_id});
+    closeModal(); toast(`Grupo "${nome}" criado ✅`,'ok');
+    renderCompartilhamentos(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function deleteGrupo(id) {
+  try {
+    await api('DELETE',`/api/grupos/${id}`);
+    toast('Grupo removido','ok');
+    renderCompartilhamentos(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+function openAddPessoa(grupoId) {
+  document.getElementById('mTitle').textContent = 'Adicionar Pessoa ao Grupo';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Nome da Pessoa</label><input id="pessoaNome" placeholder="Ex: João, ou deixe em branco para a pessoa escolher"/></div>
+    <div style="font-size:12px;color:var(--t2);margin:12px 0;padding:12px;background:var(--s2);border-radius:8px">
+      📱 Um link único será gerado. Quem abrir pelo celular pode editar o próprio nome e foto.
+    </div>
+    <button class="mbtn" onclick="savePessoa(${grupoId})">Adicionar e Gerar Link</button>`;
+  openModal();
+}
+
+async function savePessoa(grupoId) {
+  const nome = document.getElementById('pessoaNome').value.trim() || 'Nova pessoa';
+  try {
+    await api('POST', `/api/grupos/${grupoId}/pessoas`, {nome});
+    closeModal(); toast(`Link de "${nome}" criado ✅`,'ok');
+    await renderCompartilhamentos(document.getElementById('mainContent'));
+    togglePessoas(grupoId);
+  } catch(e) { toast(e.message,'err'); }
 }
 
 async function openAddCompartilhamento() {

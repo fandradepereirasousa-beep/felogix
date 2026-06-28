@@ -4,11 +4,14 @@ try { require('dotenv').config(); } catch (e) { console.warn('dotenv não instal
 const express    = require('express');
 const cors       = require('cors');
 const path       = require('path');
+const fs         = require('fs');
+const crypto     = require('crypto');
 const { Pool }   = require('pg');
 const jwt        = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const http       = require('http');
 const WebSocket  = require('ws');
+const multer     = require('multer');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -45,6 +48,32 @@ const mailer = nodemailer.createTransport({
   }
 });
 
+/* ─── UPLOAD DE FOTOS (veículos e pessoas/links) ─── */
+const UPLOADS_DIR = path.join(__dirname, 'public', 'uploads');
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+const EXT_PERMITIDAS = ['.jpg', '.jpeg', '.png', '.webp'];
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+    filename: (req, file, cb) => cb(null, crypto.randomBytes(16).toString('hex') + path.extname(file.originalname).toLowerCase())
+  }),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!EXT_PERMITIDAS.includes(ext) || !/^image\/(jpeg|png|webp)$/.test(file.mimetype)) {
+      return cb(new Error('Apenas imagens JPG, PNG ou WEBP são permitidas'));
+    }
+    cb(null, true);
+  }
+});
+// Middleware tolerante: trata erros do multer (ex.: arquivo inválido) sem derrubar a rota
+function uploadFoto(req, res, next) {
+  upload.single('foto')(req, res, (err) => {
+    if (err) return res.status(400).json({ erro: err.message || 'Erro no upload da foto' });
+    next();
+  });
+}
+
 /* ─── RATE LIMITING simples ─── */
 const hits = new Map();
 function rateLimit(max, windowMs) {
@@ -80,6 +109,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 function isEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s); }
 function isDoc(s)   { return /^[\d.\-\/]+$/.test(s) && s.length >= 11; }
 function isSafe(s)  { return typeof s === 'string' && s.length < 200 && !/[<>"'`]/.test(s); }
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
 
 /* ─── HELPERS ─── */
 function gerarSenha() {
@@ -414,6 +446,12 @@ async function initDB() {
       sucesso BOOLEAN,
       criado_em TIMESTAMP DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS grupos_rastreamento (
+      id SERIAL PRIMARY KEY,
+      cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+      nome VARCHAR(150) NOT NULL,
+      criado_em TIMESTAMP DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS rastreadores_compartilhados (
       id SERIAL PRIMARY KEY,
       cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
@@ -449,6 +487,15 @@ async function initDB() {
   try {
     await pool.query(`ALTER TABLE rastreadores_compartilhados ADD COLUMN IF NOT EXISTS expira_em TIMESTAMP`);
   } catch (e) { console.warn('Migração rastreadores_compartilhados expira_em:', e.message); }
+  try {
+    await pool.query(`ALTER TABLE rastreadores_compartilhados ADD COLUMN IF NOT EXISTS grupo_id INTEGER REFERENCES grupos_rastreamento(id) ON DELETE SET NULL`);
+  } catch (e) { console.warn('Migração rastreadores_compartilhados grupo_id:', e.message); }
+  try {
+    await pool.query(`ALTER TABLE rastreadores_compartilhados ADD COLUMN IF NOT EXISTS foto VARCHAR(255)`);
+  } catch (e) { console.warn('Migração rastreadores_compartilhados foto:', e.message); }
+  try {
+    await pool.query(`ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS foto VARCHAR(255)`);
+  } catch (e) { console.warn('Migração veiculos foto:', e.message); }
   // Migração: modo de cobrança do personalizado (fixo | por_veiculo) e tabela de config
   await pool.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS cobranca_modo VARCHAR(20)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS config (chave VARCHAR(50) PRIMARY KEY, valor TEXT)`);
@@ -650,28 +697,29 @@ app.get('/api/veiculos', auth, async (req, res) => {
   res.json(r.rows);
 });
 
-app.post('/api/veiculos', auth, adminOnly, async (req, res) => {
+app.post('/api/veiculos', auth, adminOnly, uploadFoto, async (req, res) => {
   const { placa, imei, modelo, ano, cor, cliente_id, tipo } = req.body;
   if (!placa || !cliente_id) return res.status(400).json({ erro: 'Placa e cliente são obrigatórios' });
   if (!/^[A-Z0-9\-]{4,10}$/i.test(placa)) return res.status(400).json({ erro: 'Placa inválida' });
   if (tipo === 'imei' && !imei) return res.status(400).json({ erro: 'IMEI é obrigatório para rastreador real' });
   try {
     let compartilhamento_id = null;
+    const foto = req.file ? '/uploads/' + req.file.filename : null;
 
     // Se for teste (7 dias) ou permanente, gera link automático
     if (tipo === 'teste_7dias' || tipo === 'permanente') {
-      const token = require('crypto').randomBytes(24).toString('hex');
+      const token = crypto.randomBytes(24).toString('hex');
       const expiraEm = tipo === 'teste_7dias' ? new Date(Date.now() + 7*24*60*60*1000) : null;
       const comp = await pool.query(
-        'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, tipo, expira_em, ativo) VALUES ($1, $2, $3, $4, $5, true) RETURNING *',
-        [parseInt(cliente_id), token, placa.trim(), tipo === 'teste_7dias' ? 'teste' : 'permanente', expiraEm]
+        'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, tipo, expira_em, ativo, foto) VALUES ($1, $2, $3, $4, $5, true, $6) RETURNING *',
+        [parseInt(cliente_id), token, placa.trim(), tipo === 'teste_7dias' ? 'teste' : 'permanente', expiraEm, foto]
       );
       compartilhamento_id = comp.rows[0].id;
     }
 
     const r = await pool.query(
-      'INSERT INTO veiculos (cliente_id,placa,imei,modelo,ano,cor,compartilhamento_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-      [parseInt(cliente_id), placa.toUpperCase().trim(), tipo==='imei'?imei?.trim():null, modelo?.trim()||'Veículo', parseInt(ano)||2024, cor?.trim()||'—', compartilhamento_id]
+      'INSERT INTO veiculos (cliente_id,placa,imei,modelo,ano,cor,compartilhamento_id,foto) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
+      [parseInt(cliente_id), placa.toUpperCase().trim(), tipo==='imei'?imei?.trim():null, modelo?.trim()||'Veículo', parseInt(ano)||2024, cor?.trim()||'—', compartilhamento_id, foto]
     );
 
     // Retorna com link se for teste ou permanente
@@ -690,7 +738,7 @@ app.post('/api/veiculos', auth, adminOnly, async (req, res) => {
   }
 });
 
-app.put('/api/veiculos/:id', auth, async (req, res) => {
+app.put('/api/veiculos/:id', auth, uploadFoto, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
   // Gestor só pode bloquear veículos da própria empresa
@@ -702,11 +750,12 @@ app.put('/api/veiculos/:id', auth, async (req, res) => {
   const { bloqueado, modelo, ano, cor, imei } = req.body;
   try {
     const sets = []; const vals = []; let i = 1;
-    if (bloqueado !== undefined) { sets.push(`bloqueado=$${i++}`); vals.push(!!bloqueado); }
+    if (bloqueado !== undefined) { sets.push(`bloqueado=$${i++}`); vals.push(bloqueado === true || bloqueado === 'true'); }
     if (modelo) { sets.push(`modelo=$${i++}`); vals.push(modelo.trim()); }
     if (ano)    { sets.push(`ano=$${i++}`);    vals.push(parseInt(ano)); }
     if (cor)    { sets.push(`cor=$${i++}`);    vals.push(cor.trim()); }
     if (imei)   { sets.push(`imei=$${i++}`);   vals.push(imei.trim()); }
+    if (req.file) { sets.push(`foto=$${i++}`); vals.push('/uploads/' + req.file.filename); }
     if (!sets.length) return res.status(400).json({ erro: 'Nada a atualizar' });
     vals.push(id);
     const r = await pool.query(`UPDATE veiculos SET ${sets.join(',')} WHERE id=$${i} RETURNING *`, vals);
@@ -760,8 +809,9 @@ app.get('/api/traccar/status', auth, adminOnly, async (req, res) => {
 app.post('/api/compartilhamentos', auth, adminOnly, async (req, res) => {
   const { nome, cliente_id } = req.body;
   if (!nome || !cliente_id) return res.status(400).json({ erro: 'Nome e cliente obrigatórios' });
+  if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
   try {
-    const token = require('crypto').randomBytes(24).toString('hex');
+    const token = crypto.randomBytes(24).toString('hex');
     const r = await pool.query(
       'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, ativo) VALUES ($1, $2, $3, true) RETURNING *',
       [parseInt(cliente_id), token, nome.trim()]
@@ -793,6 +843,82 @@ app.delete('/api/compartilhamentos/:id', auth, adminOnly, async (req, res) => {
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
   await pool.query('UPDATE rastreadores_compartilhados SET ativo=false WHERE id=$1', [id]);
   res.json({ ok: true });
+});
+
+/* ─── GRUPOS DE RASTREAMENTO (Pessoas/Família/Equipes) ─── */
+app.get('/api/grupos', auth, adminOnly, async (req, res) => {
+  const r = await pool.query(`
+    SELECT g.*, c.nome AS cliente_nome,
+      (SELECT COUNT(*) FROM rastreadores_compartilhados WHERE grupo_id=g.id AND ativo=true) AS qtd_pessoas
+    FROM grupos_rastreamento g
+    JOIN clientes c ON g.cliente_id = c.id
+    ORDER BY g.criado_em DESC
+  `);
+  res.json(r.rows);
+});
+
+app.post('/api/grupos', auth, adminOnly, async (req, res) => {
+  const { nome, cliente_id } = req.body;
+  if (!nome || !cliente_id) return res.status(400).json({ erro: 'Nome e cliente são obrigatórios' });
+  if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
+  try {
+    const r = await pool.query(
+      'INSERT INTO grupos_rastreamento (cliente_id, nome) VALUES ($1, $2) RETURNING *',
+      [parseInt(cliente_id), nome.trim()]
+    );
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.delete('/api/grupos/:id', auth, adminOnly, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  await pool.query('UPDATE rastreadores_compartilhados SET ativo=false WHERE grupo_id=$1', [id]);
+  await pool.query('DELETE FROM grupos_rastreamento WHERE id=$1', [id]);
+  res.json({ ok: true });
+});
+
+app.get('/api/grupos/:id/pessoas', auth, adminOnly, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const r = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE grupo_id=$1 AND ativo=true ORDER BY criado_em DESC', [id]);
+  res.json(r.rows);
+});
+
+app.post('/api/grupos/:id/pessoas', auth, adminOnly, async (req, res) => {
+  const grupoId = parseInt(req.params.id);
+  if (!grupoId) return res.status(400).json({ erro: 'Grupo inválido' });
+  const nome = (req.body.nome || 'Nova pessoa').trim();
+  if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
+  try {
+    const grupo = await pool.query('SELECT cliente_id FROM grupos_rastreamento WHERE id=$1', [grupoId]);
+    if (!grupo.rows.length) return res.status(404).json({ erro: 'Grupo não encontrado' });
+    const token = crypto.randomBytes(24).toString('hex');
+    const r = await pool.query(
+      'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, tipo, grupo_id, ativo) VALUES ($1, $2, $3, $4, $5, true) RETURNING *',
+      [grupo.rows[0].cliente_id, token, nome, 'pessoa', grupoId]
+    );
+    res.json({ ...r.rows[0], link: `${process.env.BASE_URL || 'https://felogix.com.br'}/track/${token}` });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+/* ─── PERFIL PÚBLICO DO LINK (a própria pessoa edita nome/foto pelo token) ─── */
+app.put('/api/track/:token/perfil', uploadFoto, async (req, res) => {
+  try {
+    const check = await pool.query('SELECT id FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    if (!check.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
+    const nome = (req.body.nome || '').trim();
+    const sets = []; const vals = []; let i = 1;
+    if (nome) {
+      if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
+      sets.push(`nome=$${i++}`); vals.push(nome.slice(0, 100));
+    }
+    if (req.file) { sets.push(`foto=$${i++}`); vals.push('/uploads/' + req.file.filename); }
+    if (!sets.length) return res.status(400).json({ erro: 'Nada para atualizar' });
+    vals.push(req.params.token);
+    const r = await pool.query(`UPDATE rastreadores_compartilhados SET ${sets.join(',')} WHERE token=$${i} RETURNING nome, foto`, vals);
+    res.json({ ok: true, ...r.rows[0] });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 /* ─── ALERTAS ─── */
@@ -937,12 +1063,14 @@ app.get('/track/:token', async (req, res) => {
   const r = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
   if (!r.rows.length) return res.status(404).send('Link expirado ou inválido');
   const rastreador = r.rows[0];
+  const nomeSeguro = escapeHtml(rastreador.nome);
+  const fotoSegura = rastreador.foto ? escapeHtml(rastreador.foto) : '';
   res.send(`<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Rastreador Felogix - ${rastreador.nome}</title>
+  <title>Rastreador Felogix - ${nomeSeguro}</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -950,7 +1078,10 @@ app.get('/track/:token', async (req, res) => {
     .container { max-width: 100%; height: 100vh; display: flex; flex-direction: column; }
     #map { flex: 1; }
     .toolbar { background: #2196F3; color: white; padding: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-    .toolbar h3 { margin: 0 0 10px 0; font-size: 18px; }
+    .toolbar h3 { margin: 0; font-size: 18px; }
+    .profile-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .avatar { width: 44px; height: 44px; border-radius: 50%; background: rgba(255,255,255,.2); object-fit: cover; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+    .profile-edit-btn { background: rgba(255,255,255,.2); border: none; color: white; font-size: 12px; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
     .status { display: flex; gap: 15px; flex-wrap: wrap; font-size: 14px; }
     .status-item { display: flex; align-items: center; gap: 5px; }
     .dot { width: 12px; height: 12px; border-radius: 50%; }
@@ -962,12 +1093,28 @@ app.get('/track/:token', async (req, res) => {
     .info span { display: block; margin: 3px 0; }
     .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3); border-top: 2px solid white; border-radius: 50%; animation: spin 1s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .editPanel { display: none; background: white; color: #222; padding: 12px; border-radius: 6px; margin-bottom: 10px; }
+    .editPanel.open { display: block; }
+    .editPanel label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; }
+    .editPanel input[type=text] { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; margin-bottom: 8px; }
+    .editPanel button { margin-top: 4px; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="toolbar">
-      <h3>🚗 ${rastreador.nome}</h3>
+      <div class="profile-row">
+        <div class="avatar" id="avatarImg">${fotoSegura ? `<img src="${fotoSegura}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">` : '📍'}</div>
+        <h3 id="nomeTxt" style="flex:1">${nomeSeguro}</h3>
+        <button class="profile-edit-btn" onclick="toggleEditPanel()">✏️ Editar</button>
+      </div>
+      <div class="editPanel" id="editPanel">
+        <label>Nome de exibição</label>
+        <input type="text" id="inpNome" value="${nomeSeguro}" maxlength="100">
+        <label>Foto (opcional)</label>
+        <input type="file" id="inpFoto" accept="image/jpeg,image/png,image/webp">
+        <button onclick="salvarPerfil()" id="btnSalvarPerfil">💾 Salvar</button>
+      </div>
       <div class="status">
         <div class="status-item">
           <div class="dot online" id="statusDot"></div>
@@ -987,6 +1134,29 @@ app.get('/track/:token', async (req, res) => {
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script>
     const TOKEN = '${req.params.token}';
+
+    function toggleEditPanel() { document.getElementById('editPanel').classList.toggle('open'); }
+
+    async function salvarPerfil() {
+      const btn = document.getElementById('btnSalvarPerfil');
+      const nome = document.getElementById('inpNome').value.trim();
+      const arquivo = document.getElementById('inpFoto').files[0];
+      if (!nome && !arquivo) return;
+      const fd = new FormData();
+      if (nome) fd.append('nome', nome);
+      if (arquivo) fd.append('foto', arquivo);
+      btn.textContent = 'Salvando...'; btn.disabled = true;
+      try {
+        const resp = await fetch(\`/api/track/\${TOKEN}/perfil\`, { method: 'PUT', body: fd });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.erro || 'Erro ao salvar');
+        if (data.nome) document.getElementById('nomeTxt').textContent = data.nome;
+        if (data.foto) document.getElementById('avatarImg').innerHTML = '<img src="' + data.foto + '" style="width:100%;height:100%;border-radius:50%;object-fit:cover">';
+        toggleEditPanel();
+      } catch (e) { alert(e.message); }
+      finally { btn.textContent = '💾 Salvar'; btn.disabled = false; }
+    }
+
     const map = L.map('map').setView([-15.8267, -47.8822], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap',

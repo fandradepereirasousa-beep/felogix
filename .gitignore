@@ -13,3 +13,6 @@ pm2.log
 
 # Sistema
 .DS_Store
+
+# Fotos enviadas pelos usuários (vivem só no VPS, não versionar)
+public/uploads/

@@ -250,7 +250,7 @@ function adminOnly(req, res, next) {
 }
 
 /* ─── WEBSOCKET (posições em tempo real) ─── */
-wss.on('connection', (ws, req) => {
+wss.on('connection', async (ws, req) => {
   let user;
   try {
     const token = new URL(req.url, 'http://localhost').searchParams.get('token');
@@ -259,6 +259,12 @@ wss.on('connection', (ws, req) => {
     return ws.close(1008, 'unauthorized');
   }
   ws.user = user;
+  if (user.role === 'colaborador') {
+    try {
+      const g = await pool.query('SELECT veiculo_id FROM grupo_veiculos_itens WHERE grupo_id=$1', [user.grupoId]);
+      ws.allowedVeiculoIds = new Set(g.rows.map(r => r.veiculo_id));
+    } catch (e) { ws.allowedVeiculoIds = new Set(); }
+  }
   wsClients.add(ws);
   ws.on('close', () => wsClients.delete(ws));
   ws.on('error', () => wsClients.delete(ws));
@@ -268,9 +274,15 @@ function wsSend(ws, payload) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
 }
 
-function wsBroadcastScoped(type, items, clienteIdOf) {
+function wsBroadcastScoped(type, items, clienteIdOf, veiculoIdOf) {
   wsClients.forEach(ws => {
-    const data = ws.user.role === 'admin' ? items : items.filter(i => clienteIdOf(i) === ws.user.id);
+    let data;
+    if (ws.user.role === 'admin') data = items;
+    else if (ws.user.role === 'colaborador') {
+      data = veiculoIdOf && ws.allowedVeiculoIds ? items.filter(i => ws.allowedVeiculoIds.has(veiculoIdOf(i))) : [];
+    } else {
+      data = items.filter(i => clienteIdOf(i) === ws.user.id);
+    }
     wsSend(ws, { type, data });
   });
 }
@@ -656,6 +668,31 @@ async function initDB() {
   try {
     await pool.query(`ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS foto VARCHAR(255)`);
   } catch (e) { console.warn('Migração veiculos foto:', e.message); }
+  // Colaboradores: funcionários criados pelo gestor (clientes CNPJ), com acesso
+  // restrito a um grupo de veículos específico escolhido pelo gestor.
+  await pool.query(`CREATE TABLE IF NOT EXISTS grupos_veiculos (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+    nome VARCHAR(100) NOT NULL,
+    criado_em TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS grupo_veiculos_itens (
+    grupo_id INTEGER REFERENCES grupos_veiculos(id) ON DELETE CASCADE,
+    veiculo_id INTEGER REFERENCES veiculos(id) ON DELETE CASCADE,
+    PRIMARY KEY (grupo_id, veiculo_id)
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS colaboradores (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+    grupo_id INTEGER REFERENCES grupos_veiculos(id) ON DELETE SET NULL,
+    nome VARCHAR(150) NOT NULL,
+    email VARCHAR(150) UNIQUE NOT NULL,
+    senha VARCHAR(100) NOT NULL,
+    ativo BOOLEAN DEFAULT true,
+    tentativas_login INTEGER DEFAULT 0,
+    bloqueado_ate TIMESTAMP,
+    criado_em TIMESTAMP DEFAULT NOW()
+  )`);
   // Migração: modo de cobrança do personalizado (fixo | por_veiculo) e tabela de config
   await pool.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS cobranca_modo VARCHAR(20)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS config (chave VARCHAR(50) PRIMARY KEY, valor TEXT)`);
@@ -704,29 +741,58 @@ app.post('/api/login', rateLimit(10, 60000), async (req, res) => {
 
   try {
     const r = await pool.query('SELECT * FROM clientes WHERE email=$1 AND ativo=true', [email]);
-    if (!r.rows.length) { await logAcesso(false); return res.status(401).json({ erro: 'Email ou senha incorretos' }); }
-    const c = r.rows[0];
+    if (r.rows.length) {
+      const c = r.rows[0];
 
-    // Verifica bloqueio por tentativas
-    if (c.bloqueado_ate && new Date(c.bloqueado_ate) > new Date()) {
+      // Verifica bloqueio por tentativas
+      if (c.bloqueado_ate && new Date(c.bloqueado_ate) > new Date()) {
+        return res.status(401).json({ erro: 'Conta temporariamente bloqueada. Tente em 15 minutos.' });
+      }
+
+      if (c.senha !== senha) {
+        const tentativas = (c.tentativas_login || 0) + 1;
+        const bloqueio = tentativas >= 5 ? new Date(Date.now() + 15*60*1000) : null;
+        await pool.query('UPDATE clientes SET tentativas_login=$1, bloqueado_ate=$2 WHERE id=$3', [tentativas, bloqueio, c.id]);
+        await logAcesso(false);
+        const msg = tentativas >= 5 ? 'Muitas tentativas. Conta bloqueada por 15 minutos.' : `Email ou senha incorretos (${tentativas}/5)`;
+        return res.status(401).json({ erro: msg });
+      }
+
+      // Login ok — reseta tentativas
+      await pool.query('UPDATE clientes SET tentativas_login=0, bloqueado_ate=NULL WHERE id=$1', [c.id]);
+      await logAcesso(true);
+      const token = jwt.sign({ id: c.id, role: 'gestor', nome: c.nome, empresa: c.nome, tipo: c.tipo }, JWT_SECRET, { expiresIn: '12h' });
+      const initials = c.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+      return res.json({ token, role: 'gestor', nome: c.nome, empresa: c.nome, initials, plano: c.plano, tipo: c.tipo });
+    }
+
+    // Colaborador: funcionário criado pelo gestor, acesso restrito a um grupo de veículos
+    const rc = await pool.query(
+      `SELECT col.*, cl.nome AS empresa_nome FROM colaboradores col
+       JOIN clientes cl ON col.cliente_id = cl.id
+       WHERE col.email=$1 AND col.ativo=true`, [email]
+    );
+    if (!rc.rows.length) { await logAcesso(false); return res.status(401).json({ erro: 'Email ou senha incorretos' }); }
+    const col = rc.rows[0];
+
+    if (col.bloqueado_ate && new Date(col.bloqueado_ate) > new Date()) {
       return res.status(401).json({ erro: 'Conta temporariamente bloqueada. Tente em 15 minutos.' });
     }
 
-    if (c.senha !== senha) {
-      const tentativas = (c.tentativas_login || 0) + 1;
+    if (col.senha !== senha) {
+      const tentativas = (col.tentativas_login || 0) + 1;
       const bloqueio = tentativas >= 5 ? new Date(Date.now() + 15*60*1000) : null;
-      await pool.query('UPDATE clientes SET tentativas_login=$1, bloqueado_ate=$2 WHERE id=$3', [tentativas, bloqueio, c.id]);
+      await pool.query('UPDATE colaboradores SET tentativas_login=$1, bloqueado_ate=$2 WHERE id=$3', [tentativas, bloqueio, col.id]);
       await logAcesso(false);
       const msg = tentativas >= 5 ? 'Muitas tentativas. Conta bloqueada por 15 minutos.' : `Email ou senha incorretos (${tentativas}/5)`;
       return res.status(401).json({ erro: msg });
     }
 
-    // Login ok — reseta tentativas
-    await pool.query('UPDATE clientes SET tentativas_login=0, bloqueado_ate=NULL WHERE id=$1', [c.id]);
+    await pool.query('UPDATE colaboradores SET tentativas_login=0, bloqueado_ate=NULL WHERE id=$1', [col.id]);
     await logAcesso(true);
-    const token = jwt.sign({ id: c.id, role: 'gestor', nome: c.nome, empresa: c.nome }, JWT_SECRET, { expiresIn: '12h' });
-    const initials = c.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
-    res.json({ token, role: 'gestor', nome: c.nome, empresa: c.nome, initials, plano: c.plano });
+    const token = jwt.sign({ id: col.id, role: 'colaborador', clienteId: col.cliente_id, grupoId: col.grupo_id, nome: col.nome, empresa: col.empresa_nome }, JWT_SECRET, { expiresIn: '12h' });
+    const initials = col.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+    res.json({ token, role: 'colaborador', nome: col.nome, empresa: col.empresa_nome, initials });
   } catch (err) { console.error(err); res.status(500).json({ erro: 'Erro interno' }); }
 });
 
@@ -761,11 +827,12 @@ app.post('/api/alterar-senha', auth, async (req, res) => {
   if (!senha_atual || !nova_senha) return res.status(400).json({ erro: 'Preencha todos os campos' });
   if (nova_senha.length < 6) return res.status(400).json({ erro: 'Senha deve ter pelo menos 6 caracteres' });
   if (nova_senha.length > 100) return res.status(400).json({ erro: 'Senha muito longa' });
+  const tabela = req.user.role === 'colaborador' ? 'colaboradores' : 'clientes';
   try {
-    const r = await pool.query('SELECT * FROM clientes WHERE id=$1', [req.user.id]);
+    const r = await pool.query(`SELECT * FROM ${tabela} WHERE id=$1`, [req.user.id]);
     if (!r.rows.length || r.rows[0].senha !== senha_atual)
       return res.status(400).json({ erro: 'Senha atual incorreta' });
-    await pool.query('UPDATE clientes SET senha=$1 WHERE id=$2', [nova_senha, req.user.id]);
+    await pool.query(`UPDATE ${tabela} SET senha=$1 WHERE id=$2`, [nova_senha, req.user.id]);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
@@ -775,12 +842,22 @@ app.get('/api/verify-token', auth, async (req, res) => {
   if (req.user.role === 'admin') {
     return res.json({ token: '', role: 'admin', nome: 'Felipe Andrade', initials: 'FA' });
   }
+  if (req.user.role === 'colaborador') {
+    const r = await pool.query(
+      `SELECT col.nome, cl.nome AS empresa_nome FROM colaboradores col
+       JOIN clientes cl ON col.cliente_id = cl.id WHERE col.id=$1 AND col.ativo=true`, [req.user.id]
+    );
+    if (!r.rows.length) return res.status(401).json({ erro: 'Usuário inativo' });
+    const col = r.rows[0];
+    const initials = col.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+    return res.json({ token: '', role: 'colaborador', nome: col.nome, empresa: col.empresa_nome, initials });
+  }
   try {
-    const r = await pool.query('SELECT nome, plano FROM clientes WHERE id=$1 AND ativo=true', [req.user.id]);
+    const r = await pool.query('SELECT nome, plano, tipo FROM clientes WHERE id=$1 AND ativo=true', [req.user.id]);
     if (!r.rows.length) return res.status(401).json({ erro: 'Usuário inativo' });
     const c = r.rows[0];
     const initials = c.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
-    res.json({ token: '', role: 'gestor', nome: c.nome, empresa: c.nome, initials, plano: c.plano });
+    res.json({ token: '', role: 'gestor', nome: c.nome, empresa: c.nome, initials, plano: c.plano, tipo: c.tipo });
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
@@ -849,6 +926,9 @@ app.get('/api/veiculos', auth, async (req, res) => {
   if (req.user.role === 'admin') {
     q = 'SELECT v.*,c.nome as cliente_nome,c.plano FROM veiculos v JOIN clientes c ON v.cliente_id=c.id ORDER BY v.criado_em DESC';
     p = [];
+  } else if (req.user.role === 'colaborador') {
+    q = 'SELECT v.*,c.nome as cliente_nome,c.plano FROM veiculos v JOIN clientes c ON v.cliente_id=c.id JOIN grupo_veiculos_itens gvi ON gvi.veiculo_id=v.id WHERE gvi.grupo_id=$1 ORDER BY v.criado_em DESC';
+    p = [req.user.grupoId];
   } else {
     q = 'SELECT v.*,c.nome as cliente_nome,c.plano FROM veiculos v JOIN clientes c ON v.cliente_id=c.id WHERE v.cliente_id=$1 ORDER BY v.criado_em DESC';
     p = [req.user.id];
@@ -901,6 +981,7 @@ app.post('/api/veiculos', auth, adminOnly, uploadFoto, async (req, res) => {
 app.put('/api/veiculos/:id', auth, uploadFoto, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
   // Gestor só pode bloquear veículos da própria empresa
   if (req.user.role !== 'admin') {
     const check = await pool.query('SELECT cliente_id FROM veiculos WHERE id=$1', [id]);
@@ -930,6 +1011,182 @@ app.delete('/api/veiculos/:id', auth, adminOnly, async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ─── GRUPOS DE VEÍCULOS (apenas clientes CNPJ) ─── */
+app.get('/api/grupos-veiculos', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const q = req.user.role === 'admin'
+    ? `SELECT g.*, c.nome AS cliente_nome,
+        (SELECT COUNT(*) FROM grupo_veiculos_itens WHERE grupo_id=g.id) AS qtd_veiculos
+       FROM grupos_veiculos g JOIN clientes c ON g.cliente_id=c.id ORDER BY g.criado_em DESC`
+    : `SELECT g.*,
+        (SELECT COUNT(*) FROM grupo_veiculos_itens WHERE grupo_id=g.id) AS qtd_veiculos
+       FROM grupos_veiculos g WHERE g.cliente_id=$1 ORDER BY g.criado_em DESC`;
+  const r = await pool.query(q, req.user.role === 'admin' ? [] : [req.user.id]);
+  res.json(r.rows);
+});
+
+app.get('/api/grupos-veiculos/:id/veiculos', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const g = await pool.query('SELECT cliente_id FROM grupos_veiculos WHERE id=$1', [id]);
+  if (!g.rows.length) return res.status(404).json({ erro: 'Grupo não encontrado' });
+  if (req.user.role !== 'admin' && g.rows[0].cliente_id !== req.user.id) return res.status(403).json({ erro: 'Sem permissão' });
+  const r = await pool.query(
+    `SELECT v.id, v.placa, v.modelo FROM veiculos v
+     JOIN grupo_veiculos_itens gvi ON gvi.veiculo_id = v.id
+     WHERE gvi.grupo_id=$1 ORDER BY v.placa`, [id]
+  );
+  res.json(r.rows);
+});
+
+app.post('/api/grupos-veiculos', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const { nome, veiculo_ids } = req.body;
+  const cliente_id = req.user.role === 'admin' ? parseInt(req.body.cliente_id) : req.user.id;
+  if (!nome || !cliente_id) return res.status(400).json({ erro: 'Nome e cliente são obrigatórios' });
+  if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
+  const cli = await pool.query('SELECT tipo FROM clientes WHERE id=$1', [cliente_id]);
+  if (!cli.rows.length || cli.rows[0].tipo !== 'cnpj') return res.status(400).json({ erro: 'Apenas clientes CNPJ podem ter grupos de veículos' });
+  try {
+    const g = await pool.query('INSERT INTO grupos_veiculos (cliente_id, nome) VALUES ($1,$2) RETURNING *', [cliente_id, nome.trim()]);
+    const ids = Array.isArray(veiculo_ids) ? veiculo_ids.map(n => parseInt(n)).filter(Boolean) : [];
+    for (const vid of ids) {
+      await pool.query(
+        `INSERT INTO grupo_veiculos_itens (grupo_id, veiculo_id)
+         SELECT $1,$2 WHERE EXISTS (SELECT 1 FROM veiculos WHERE id=$2 AND cliente_id=$3)
+         ON CONFLICT DO NOTHING`, [g.rows[0].id, vid, cliente_id]
+      );
+    }
+    res.json(g.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.put('/api/grupos-veiculos/:id', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const g = await pool.query('SELECT * FROM grupos_veiculos WHERE id=$1', [id]);
+  if (!g.rows.length) return res.status(404).json({ erro: 'Grupo não encontrado' });
+  if (req.user.role !== 'admin' && g.rows[0].cliente_id !== req.user.id) return res.status(403).json({ erro: 'Sem permissão' });
+  const { nome, veiculo_ids } = req.body;
+  try {
+    if (nome !== undefined && isSafe(nome)) await pool.query('UPDATE grupos_veiculos SET nome=$1 WHERE id=$2', [nome.trim(), id]);
+    if (Array.isArray(veiculo_ids)) {
+      await pool.query('DELETE FROM grupo_veiculos_itens WHERE grupo_id=$1', [id]);
+      const ids = veiculo_ids.map(n => parseInt(n)).filter(Boolean);
+      for (const vid of ids) {
+        await pool.query(
+          `INSERT INTO grupo_veiculos_itens (grupo_id, veiculo_id)
+           SELECT $1,$2 WHERE EXISTS (SELECT 1 FROM veiculos WHERE id=$2 AND cliente_id=$3)
+           ON CONFLICT DO NOTHING`, [id, vid, g.rows[0].cliente_id]
+        );
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.delete('/api/grupos-veiculos/:id', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const g = await pool.query('SELECT cliente_id FROM grupos_veiculos WHERE id=$1', [id]);
+  if (!g.rows.length) return res.status(404).json({ erro: 'Grupo não encontrado' });
+  if (req.user.role !== 'admin' && g.rows[0].cliente_id !== req.user.id) return res.status(403).json({ erro: 'Sem permissão' });
+  await pool.query('DELETE FROM grupos_veiculos WHERE id=$1', [id]);
+  res.json({ ok: true });
+});
+
+/* ─── COLABORADORES (funcionários do gestor, acesso restrito a um grupo de veículos) ─── */
+app.get('/api/colaboradores', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const q = req.user.role === 'admin'
+    ? `SELECT col.id,col.cliente_id,col.grupo_id,col.nome,col.email,col.ativo,col.criado_em,
+        c.nome AS cliente_nome, g.nome AS grupo_nome
+       FROM colaboradores col JOIN clientes c ON col.cliente_id=c.id
+       LEFT JOIN grupos_veiculos g ON col.grupo_id=g.id ORDER BY col.criado_em DESC`
+    : `SELECT col.id,col.cliente_id,col.grupo_id,col.nome,col.email,col.ativo,col.criado_em,
+        g.nome AS grupo_nome
+       FROM colaboradores col LEFT JOIN grupos_veiculos g ON col.grupo_id=g.id
+       WHERE col.cliente_id=$1 ORDER BY col.criado_em DESC`;
+  const r = await pool.query(q, req.user.role === 'admin' ? [] : [req.user.id]);
+  res.json(r.rows);
+});
+
+app.post('/api/colaboradores', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const { nome, email, grupo_id } = req.body;
+  const cliente_id = req.user.role === 'admin' ? parseInt(req.body.cliente_id) : req.user.id;
+  if (!nome || !email || !cliente_id) return res.status(400).json({ erro: 'Nome, email e cliente são obrigatórios' });
+  if (!isEmail(email)) return res.status(400).json({ erro: 'Email inválido' });
+  if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
+  const cli = await pool.query('SELECT tipo FROM clientes WHERE id=$1', [cliente_id]);
+  if (!cli.rows.length || cli.rows[0].tipo !== 'cnpj') return res.status(400).json({ erro: 'Apenas clientes CNPJ podem adicionar colaboradores' });
+  let grupoIdFinal = null;
+  if (grupo_id) {
+    const g = await pool.query('SELECT id FROM grupos_veiculos WHERE id=$1 AND cliente_id=$2', [parseInt(grupo_id), cliente_id]);
+    if (!g.rows.length) return res.status(400).json({ erro: 'Grupo de veículos inválido' });
+    grupoIdFinal = g.rows[0].id;
+  }
+  const jaClientes = await pool.query('SELECT 1 FROM clientes WHERE email=$1', [email.trim().toLowerCase()]);
+  if (jaClientes.rows.length) return res.status(400).json({ erro: 'Email já cadastrado' });
+  const senha = req.body.senha && req.body.senha.length >= 6 ? req.body.senha : gerarSenha();
+  try {
+    const r = await pool.query(
+      'INSERT INTO colaboradores (cliente_id,grupo_id,nome,email,senha) VALUES ($1,$2,$3,$4,$5) RETURNING id,cliente_id,grupo_id,nome,email,ativo,criado_em',
+      [cliente_id, grupoIdFinal, nome.trim(), email.trim().toLowerCase(), senha]
+    );
+    res.json({ ...r.rows[0], senha_gerada: senha });
+  } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ erro: 'Email já cadastrado' });
+    res.status(500).json({ erro: 'Erro interno' });
+  }
+});
+
+app.put('/api/colaboradores/:id', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const col = await pool.query('SELECT * FROM colaboradores WHERE id=$1', [id]);
+  if (!col.rows.length) return res.status(404).json({ erro: 'Colaborador não encontrado' });
+  if (req.user.role !== 'admin' && col.rows[0].cliente_id !== req.user.id) return res.status(403).json({ erro: 'Sem permissão' });
+  const { nome, email, senha, ativo, grupo_id } = req.body;
+  try {
+    const sets = []; const vals = []; let i = 1;
+    if (nome !== undefined && isSafe(nome)) { sets.push(`nome=$${i++}`); vals.push(nome.trim()); }
+    if (email !== undefined && isEmail(email)) { sets.push(`email=$${i++}`); vals.push(email.trim().toLowerCase()); }
+    if (senha !== undefined && senha.length >= 6) { sets.push(`senha=$${i++}`); vals.push(senha); }
+    if (ativo !== undefined) { sets.push(`ativo=$${i++}`); vals.push(!!ativo); }
+    if (grupo_id !== undefined) {
+      if (grupo_id === null || grupo_id === '') { sets.push(`grupo_id=$${i++}`); vals.push(null); }
+      else {
+        const g = await pool.query('SELECT id FROM grupos_veiculos WHERE id=$1 AND cliente_id=$2', [parseInt(grupo_id), col.rows[0].cliente_id]);
+        if (!g.rows.length) return res.status(400).json({ erro: 'Grupo de veículos inválido' });
+        sets.push(`grupo_id=$${i++}`); vals.push(g.rows[0].id);
+      }
+    }
+    if (!sets.length) return res.status(400).json({ erro: 'Nada a atualizar' });
+    vals.push(id);
+    const r = await pool.query(`UPDATE colaboradores SET ${sets.join(',')} WHERE id=$${i} RETURNING id,cliente_id,grupo_id,nome,email,ativo,criado_em`, vals);
+    res.json(r.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ erro: 'Email já cadastrado' });
+    res.status(500).json({ erro: 'Erro interno' });
+  }
+});
+
+app.delete('/api/colaboradores/:id', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const col = await pool.query('SELECT cliente_id FROM colaboradores WHERE id=$1', [id]);
+  if (!col.rows.length) return res.status(404).json({ erro: 'Colaborador não encontrado' });
+  if (req.user.role !== 'admin' && col.rows[0].cliente_id !== req.user.id) return res.status(403).json({ erro: 'Sem permissão' });
+  await pool.query('DELETE FROM colaboradores WHERE id=$1', [id]);
+  res.json({ ok: true });
+});
+
 /* ─── POSIÇÕES (Traccar Integration) ─── */
 async function getPosicoesEnriquecidas() {
   const posicoes = await obterPosicoesTraccar();
@@ -953,7 +1210,13 @@ async function getPosicoesEnriquecidas() {
 
 app.get('/api/posicoes', auth, async (req, res) => {
   const result = await getPosicoesEnriquecidas();
-  res.json(req.user.role === 'admin' ? result : result.filter(r => r.cliente_id === req.user.id));
+  if (req.user.role === 'admin') return res.json(result);
+  if (req.user.role === 'colaborador') {
+    const g = await pool.query('SELECT veiculo_id FROM grupo_veiculos_itens WHERE grupo_id=$1', [req.user.grupoId]);
+    const allowed = new Set(g.rows.map(r => r.veiculo_id));
+    return res.json(result.filter(r => allowed.has(r.veiculo_id)));
+  }
+  res.json(result.filter(r => r.cliente_id === req.user.id));
 });
 
 // Empurra posições via WebSocket pros clientes conectados, no mesmo ritmo do polling do Traccar
@@ -961,7 +1224,7 @@ async function broadcastPosicoes() {
   if (!wsClients.size) return;
   try {
     const result = await getPosicoesEnriquecidas();
-    wsBroadcastScoped('posicoes', result, r => r.cliente_id);
+    wsBroadcastScoped('posicoes', result, r => r.cliente_id, r => r.veiculo_id);
   } catch (e) { console.error('Erro no broadcast de posições:', e.message); }
 }
 setInterval(broadcastPosicoes, 5000);
@@ -971,8 +1234,12 @@ app.get('/api/veiculos/:id/historico', auth, async (req, res) => {
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
   const v = await pool.query('SELECT cliente_id, imei FROM veiculos WHERE id=$1', [id]);
   if (!v.rows.length) return res.status(404).json({ erro: 'Veículo não encontrado' });
-  if (req.user.role !== 'admin' && v.rows[0].cliente_id !== req.user.id)
+  if (req.user.role === 'colaborador') {
+    const g = await pool.query('SELECT 1 FROM grupo_veiculos_itens WHERE grupo_id=$1 AND veiculo_id=$2', [req.user.grupoId, id]);
+    if (!g.rows.length) return res.status(403).json({ erro: 'Sem permissão para este veículo' });
+  } else if (req.user.role !== 'admin' && v.rows[0].cliente_id !== req.user.id) {
     return res.status(403).json({ erro: 'Sem permissão para este veículo' });
+  }
   if (!v.rows[0].imei) return res.json([]);
   try {
     const to = new Date();
@@ -1238,7 +1505,7 @@ app.get('/api/track/:token/grupo', async (req, res) => {
 
 /* ─── ALERTAS ─── */
 app.get('/api/alertas', auth, async (req, res) => {
-  if (req.user.role === 'admin') return res.json({});
+  if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.json({});
   const r = await pool.query('SELECT * FROM alertas_prefs WHERE cliente_id=$1', [req.user.id]);
   if (r.rows.length) return res.json(r.rows[0]);
   const n = await pool.query(
@@ -1249,7 +1516,7 @@ app.get('/api/alertas', auth, async (req, res) => {
 });
 
 app.put('/api/alertas', auth, async (req, res) => {
-  if (req.user.role === 'admin') return res.status(403).json({ erro: 'Sem permissão' });
+  if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
   const { email_alertas, velocidade, bloqueio, geocerca, offline, horario } = req.body;
   if (email_alertas && !isEmail(email_alertas)) return res.status(400).json({ erro: 'Email inválido' });
   try {

@@ -456,13 +456,13 @@ function buildNav() {
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
     {ic:'👥',lbl:'Clientes',id:'clientes'},
     {ic:'🚗',lbl:'Veículos',id:'veiculos'},
-    {ic:'👨‍👩‍👧',lbl:'Pessoas',id:'compartilhamentos'},
+    {ic:'📱',lbl:'Celulares',id:'compartilhamentos'},
     {ic:'💰',lbl:'Financeiro',id:'financeiro'},
   ];
   const gestorTabs = [
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
     {ic:'🚗',lbl:'Veículos',id:'veiculos'},
-    {ic:'👨‍👩‍👧',lbl:'Pessoas',id:'compartilhamentos'},
+    {ic:'📱',lbl:'Celulares',id:'compartilhamentos'},
     {ic:'🔔',lbl:'Alertas',id:'alertas'},
   ];
   const tabs = CU.role === 'admin' ? adminTabs : gestorTabs;
@@ -566,7 +566,7 @@ function fmtLastSeen(ts) {
 function updateMapList() {
   const el = document.getElementById('mapList'); if (!el) return;
   const allItems = VEHICLES.length + COMPARTILHAMENTOS.length;
-  if (!allItems) { el.innerHTML = `<div class="empty"><div class="ei">🚗</div><div class="et">Nada para rastrear ainda</div><div class="es">Veículos e pessoas aparecerão aqui quando cadastrados</div></div>`; return; }
+  if (!allItems) { el.innerHTML = `<div class="empty"><div class="ei">🚗</div><div class="et">Nada para rastrear ainda</div><div class="es">Veículos e celulares aparecerão aqui quando cadastrados</div></div>`; return; }
   document.getElementById('sbOnline').textContent  = VEHICLES.filter(v => v.status !== 'offline').length + COMPARTILHAMENTOS.filter(isPersonOnline).length;
   document.getElementById('sbMoving').textContent  = VEHICLES.filter(v => v.status === 'moving').length;
   document.getElementById('sbStopped').textContent = VEHICLES.filter(v => v.status === 'stopped').length;
@@ -589,7 +589,7 @@ function updateMapList() {
     </div>`;
   }).join('');
   const vehiclesSec = VEHICLES.length ? `<div class="msb-sec">🚗 Veículos (${VEHICLES.length})</div>${vehiclesHtml}` : '';
-  const compsSec = COMPARTILHAMENTOS.length ? `<div class="msb-sec">📱 Pessoas (${COMPARTILHAMENTOS.length})</div>${compsHtml}` : '';
+  const compsSec = COMPARTILHAMENTOS.length ? `<div class="msb-sec">📱 Celulares (${COMPARTILHAMENTOS.length})</div>${compsHtml}` : '';
   el.innerHTML = vehiclesSec + compsSec;
 }
 
@@ -605,7 +605,7 @@ function filterMapList(q) {
   const compsHtml = cs.map(c => `<div class="vmc" style="background:rgba(255,152,0,.1)" onclick="openBSPerson(${c.id})">
     <div class="vmc-r1"><div class="sdot ${isPersonOnline(c)?'moving':'offline'}"></div><div class="vmc-plate" style="font-size:11px">📱 ${c.nome}</div></div></div>`).join('');
   el.innerHTML = (vs.length ? `<div class="msb-sec">🚗 Veículos (${vs.length})</div>${vehiclesHtml}` : '')
-    + (cs.length ? `<div class="msb-sec">📱 Pessoas (${cs.length})</div>${compsHtml}` : '');
+    + (cs.length ? `<div class="msb-sec">📱 Celulares (${cs.length})</div>${compsHtml}` : '');
 }
 
 function initMap() {
@@ -1314,19 +1314,19 @@ async function renderCompartilhamentos(c) {
     ]);
     const livres = comps.filter(comp => !comp.grupo_id);
     c.innerHTML = `<div class="pp">
-      <div class="sec-title">Grupos de Pessoas <span style="color:var(--t2);font-size:11px;font-weight:400">${grupos.length}</span><button class="add-btn" onclick="openAddGrupo()">＋ Novo Grupo</button></div>
-      ${!grupos.length ? `<div class="empty"><div class="ei">👨‍👩‍👧</div><div class="et">Nenhum grupo criado</div><div class="es">Crie um grupo (ex: Família, ou equipe de uma empresa) e adicione pessoas com link próprio</div></div>` :
+      <div class="sec-title">Grupos de Celulares <span style="color:var(--t2);font-size:11px;font-weight:400">${grupos.length}</span><button class="add-btn" onclick="openAddGrupo()">＋ Novo Grupo</button></div>
+      ${!grupos.length ? `<div class="empty"><div class="ei">📱</div><div class="et">Nenhum grupo criado</div><div class="es">Crie um grupo (ex: Família, ou equipe de uma empresa) e adicione celulares com link próprio</div></div>` :
         grupos.map(g => `<div class="card">
           <div class="card-top">
             <div class="card-info">
               <div class="card-title">${g.nome}</div>
-              <div class="card-sub">${g.cliente_nome} · ${g.qtd_pessoas} pessoa(s)</div>
+              <div class="card-sub">${g.cliente_nome} · ${g.qtd_pessoas} celular(es)</div>
             </div>
           </div>
           <div class="acts-row">
-            <div class="act-btn blue" onclick="togglePessoas(${g.id})">👁 Ver pessoas</div>
-            <div class="act-btn" onclick="openAddPessoa(${g.id})">＋ Pessoa</div>
-            <div class="act-btn red" onclick="if(confirm('Remover grupo \\'${g.nome}\\' e todas as pessoas dele?'))deleteGrupo(${g.id})">🗑 Remover</div>
+            <div class="act-btn blue" onclick="togglePessoas(${g.id})">👁 Ver celulares</div>
+            <div class="act-btn" onclick="openAddPessoa(${g.id})">＋ Celular</div>
+            <div class="act-btn red" onclick="if(confirm('Remover grupo \\'${g.nome}\\' e todos os celulares dele?'))deleteGrupo(${g.id})">🗑 Remover</div>
           </div>
           <div id="pessoas_${g.id}" style="display:none;margin-top:10px"></div>
         </div>`).join('')}
@@ -1365,7 +1365,7 @@ async function togglePessoas(grupoId) {
   box.innerHTML = `<div class="loading" style="padding:10px"><div class="spinner"></div></div>`;
   try {
     const pessoas = await api('GET', `/api/grupos/${grupoId}/pessoas`);
-    box.innerHTML = !pessoas.length ? `<div class="es" style="padding:6px 0">Nenhuma pessoa neste grupo ainda</div>` :
+    box.innerHTML = !pessoas.length ? `<div class="es" style="padding:6px 0">Nenhum celular neste grupo ainda</div>` :
       pessoas.map(p => {
         const link = window.location.origin + '/track/' + p.token;
         const online = p.ultimo_update && new Date(p.ultimo_update) > new Date(Date.now()-60000);
@@ -1393,7 +1393,7 @@ async function togglePessoas(grupoId) {
 async function removerPessoa(grupoId, pessoaId) {
   try {
     await api('DELETE', `/api/compartilhamentos/${pessoaId}`);
-    toast('Pessoa removida','ok');
+    toast('Celular removido','ok');
     renderCompartilhamentos(document.getElementById('mainContent'));
   } catch(e) { toast(e.message,'err'); }
 }
@@ -1402,7 +1402,7 @@ async function openAddGrupo() {
   const isAdmin = CU.role === 'admin';
   let clientes = [];
   if (isAdmin) { try { clientes = await api('GET','/api/clientes'); } catch(e){} }
-  document.getElementById('mTitle').textContent = 'Novo Grupo de Pessoas';
+  document.getElementById('mTitle').textContent = 'Novo Grupo de Celulares';
   document.getElementById('mBody').innerHTML = `
     <div class="mf"><label>Nome do Grupo</label><input id="grupoNome" placeholder="Ex: Família Andrade, Trabalho"/></div>
     ${isAdmin ? `<div class="mf"><label>Cliente</label>
@@ -1411,7 +1411,7 @@ async function openAddGrupo() {
       </select>
     </div>` : ''}
     <div style="font-size:12px;color:var(--t2);margin:12px 0;padding:12px;background:var(--s2);border-radius:8px">
-      👨‍👩‍👧 Depois de criar o grupo, adicione cada pessoa (ou celular) e cada uma recebe seu próprio link de rastreamento.
+      📱 Depois de criar o grupo, adicione cada celular e cada um recebe seu próprio link de rastreamento.
     </div>
     <button class="mbtn" onclick="saveGrupo()">Criar Grupo</button>`;
   openModal();
@@ -1439,9 +1439,9 @@ async function deleteGrupo(id) {
 }
 
 function openAddPessoa(grupoId) {
-  document.getElementById('mTitle').textContent = 'Adicionar Pessoa ao Grupo';
+  document.getElementById('mTitle').textContent = 'Adicionar Celular ao Grupo';
   document.getElementById('mBody').innerHTML = `
-    <div class="mf"><label>Nome da Pessoa</label><input id="pessoaNome" placeholder="Ex: João, ou deixe em branco para a pessoa escolher"/></div>
+    <div class="mf"><label>Nome do Celular</label><input id="pessoaNome" placeholder="Ex: João, ou deixe em branco para a pessoa escolher"/></div>
     <div class="mf"><label>Telefone (opcional)</label><input id="pessoaTelefone" placeholder="Ex: (11) 99999-9999"/></div>
     <div class="mf"><label>Foto (opcional)</label><input id="pessoaFoto" type="file" accept="image/jpeg,image/png,image/webp"/></div>
     <div style="font-size:12px;color:var(--t2);margin:12px 0;padding:12px;background:var(--s2);border-radius:8px">
@@ -1452,7 +1452,7 @@ function openAddPessoa(grupoId) {
 }
 
 async function savePessoa(grupoId) {
-  const nome = document.getElementById('pessoaNome').value.trim() || 'Nova pessoa';
+  const nome = document.getElementById('pessoaNome').value.trim() || 'Novo celular';
   const telefone = document.getElementById('pessoaTelefone')?.value.trim() || '';
   try {
     const arquivoFoto = document.getElementById('pessoaFoto')?.files[0];
@@ -1522,7 +1522,7 @@ async function gerarSenhaPessoa(id, nome) {
     const d = await api('POST', `/api/compartilhamentos/${id}/senha`);
     document.getElementById('mTitle').textContent = 'Senha gerada';
     document.getElementById('mBody').innerHTML = `
-      <div style="font-size:13px;color:var(--t2);margin-bottom:12px">Envie essa senha pra <b>${nome}</b>. Sem ela ninguém abre o link de rastreamento dessa pessoa.</div>
+      <div style="font-size:13px;color:var(--t2);margin-bottom:12px">Envie essa senha pra <b>${nome}</b>. Sem ela ninguém abre o link de rastreamento desse celular.</div>
       <div class="mf"><label>Senha</label>
         <div style="display:flex;gap:8px">
           <input id="senhaGerada" readonly value="${d.senha}" style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:16px;letter-spacing:1px"/>

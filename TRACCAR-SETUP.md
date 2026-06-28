@@ -24,37 +24,58 @@ Frontend Mapa
 
 ## 🚀 Instalação
 
-### 1. Instalar Traccar no VPS
+### 1. Instalar Traccar no VPS (automatizado)
+
+A instalação já está automatizada pelo workflow `.github/workflows/setup-traccar.yml`
+(disparo manual pela aba Actions do GitHub → "Configurar Traccar no VPS" → Run workflow).
+Ele é idempotente — pode ser rodado de novo a qualquer momento sem risco.
+
+O que o workflow faz:
+- Instala Docker no VPS se ainda não tiver
+- Sobe o container `traccar/traccar:latest` com `--restart unless-stopped`
+- **Painel admin (8082) fica acessível só via `localhost`** — não exposto à internet
+- **Porta GT06 (5023/UDP) fica pública**, para os rastreadores se conectarem
+- Libera 5023/UDP no `ufw` se estiver ativo no VPS
+- Sincroniza a senha do usuário `admin` do Traccar com o valor de `TRACCAR_PASS`
+  já configurado no `.env` de produção (se houver um diferente do padrão)
+
+Se preferir rodar manualmente:
 
 ```bash
-# No VPS felogix.com.br
 ssh root@felogix.com.br
 
-# Instalar Docker (se não tiver)
 curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
+sh get-docker.sh
 
-# Executar Traccar
 docker run -d \
   --name traccar \
-  -p 8082:8082 \
+  --restart unless-stopped \
+  -p 127.0.0.1:8082:8082 \
   -p 5023:5023/udp \
   -v traccar-data:/opt/traccar/data \
   traccar/traccar:latest
 
-# Verificar logs
 docker logs -f traccar
 ```
 
 ### 2. Acessar Interface Traccar
 
-```
-URL: http://felogix.com.br:8082
-Usuário: admin
-Senha: admin
+O painel admin não fica mais exposto publicamente (só `localhost:8082` no VPS).
+Para acessar de fora, abra um túnel SSH:
+
+```bash
+ssh -L 8082:localhost:8082 root@felogix.com.br
+# depois acesse http://localhost:8082 no seu navegador local
 ```
 
-**⚠️ Importante:** Mude a senha padrão!
+```
+Usuário: admin
+Senha: admin (ou o valor de TRACCAR_PASS no .env de produção, se já tiver sido customizado)
+```
+
+**⚠️ Importante:** Mude a senha padrão pelo túnel SSH e atualize `TRACCAR_PASS` no
+`.env` de produção (depois rode o workflow de novo para sincronizar, ou troque manualmente
+e reinicie a app com `pm2 restart felogix-server --update-env`).
 
 ### 3. Configurar Trackerking EC33
 

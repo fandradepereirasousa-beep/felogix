@@ -833,7 +833,7 @@ async function renderVeiculos(c) {
             <div class="acts-row">
               <div class="act-btn" onclick="goTab('mapa');setTimeout(()=>openBS(${v.id}),300)">🗺 Ver no mapa</div>
               ${CU.role==='admin'?`<div class="act-btn blue" onclick="openEditVeiculo(${JSON.stringify(v).replace(/"/g,'&quot;')})">✏️ Editar</div>`:''}
-              ${isLink?`<div class="act-btn green" onclick="showDemoLink(${v.compartilhamento_id})">📋 Ver Link</div>`:'<div class="act-btn" onclick="toggleBlock(${v.id})">${v.bloqueado?'✅ Desbloquear':'🔒 Bloquear'}</div>'}
+              ${isLink?`<div class="act-btn green" onclick="showDemoLink(${v.compartilhamento_id})">📋 Ver Link</div>`:`<div class="act-btn" onclick="toggleBlock(${v.id})">${v.bloqueado?'✅ Desbloquear':'🔒 Bloquear'}</div>`}
             </div>
           </div>`;
         }).join('')}

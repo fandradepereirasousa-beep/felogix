@@ -416,6 +416,9 @@ async function initDB() {
   try {
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS pagamentos_cliente_mes_uniq ON pagamentos (cliente_id, mes_ref)`);
   } catch (e) { console.warn('Migração pagamentos (índice único):', e.message); }
+  try {
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS alertas_prefs_cliente_uniq ON alertas_prefs (cliente_id)`);
+  } catch (e) { console.warn('Migração alertas_prefs (índice único):', e.message); }
   // Migração: modo de cobrança do personalizado (fixo | por_veiculo) e tabela de config
   await pool.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS cobranca_modo VARCHAR(20)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS config (chave VARCHAR(50) PRIMARY KEY, valor TEXT)`);

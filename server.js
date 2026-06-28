@@ -380,6 +380,7 @@ async function initDB() {
       ano INTEGER,
       cor VARCHAR(50),
       bloqueado BOOLEAN DEFAULT false,
+      compartilhamento_id INTEGER REFERENCES rastreadores_compartilhados(id) ON DELETE SET NULL,
       criado_em TIMESTAMP DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS alertas_prefs (
@@ -433,6 +434,9 @@ async function initDB() {
   try {
     await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS alertas_prefs_cliente_uniq ON alertas_prefs (cliente_id)`);
   } catch (e) { console.warn('Migração alertas_prefs (índice único):', e.message); }
+  try {
+    await pool.query(`ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS compartilhamento_id INTEGER REFERENCES rastreadores_compartilhados(id) ON DELETE SET NULL`);
+  } catch (e) { console.warn('Migração veiculos compartilhamento_id:', e.message); }
   // Migração: modo de cobrança do personalizado (fixo | por_veiculo) e tabela de config
   await pool.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS cobranca_modo VARCHAR(20)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS config (chave VARCHAR(50) PRIMARY KEY, valor TEXT)`);
@@ -635,15 +639,35 @@ app.get('/api/veiculos', auth, async (req, res) => {
 });
 
 app.post('/api/veiculos', auth, adminOnly, async (req, res) => {
-  const { placa, imei, modelo, ano, cor, cliente_id } = req.body;
+  const { placa, imei, modelo, ano, cor, cliente_id, tipo } = req.body;
   if (!placa || !cliente_id) return res.status(400).json({ erro: 'Placa e cliente são obrigatórios' });
   if (!/^[A-Z0-9\-]{4,10}$/i.test(placa)) return res.status(400).json({ erro: 'Placa inválida' });
   try {
+    let compartilhamento_id = null;
+
+    // Se for demo (compartilhamento), gera link automático
+    if (tipo === 'demo') {
+      const token = require('crypto').randomBytes(24).toString('hex');
+      const comp = await pool.query(
+        'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, ativo) VALUES ($1, $2, $3, true) RETURNING *',
+        [parseInt(cliente_id), token, placa.trim()]
+      );
+      compartilhamento_id = comp.rows[0].id;
+    }
+
     const r = await pool.query(
-      'INSERT INTO veiculos (cliente_id,placa,imei,modelo,ano,cor) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
-      [parseInt(cliente_id), placa.toUpperCase().trim(), imei?.trim()||null, modelo?.trim()||'Veículo', parseInt(ano)||2024, cor?.trim()||'—']
+      'INSERT INTO veiculos (cliente_id,placa,imei,modelo,ano,cor,compartilhamento_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+      [parseInt(cliente_id), placa.toUpperCase().trim(), imei?.trim()||null, modelo?.trim()||'Veículo', parseInt(ano)||2024, cor?.trim()||'—', compartilhamento_id]
     );
-    res.json(r.rows[0]);
+
+    // Retorna com link se for demo
+    const resultado = r.rows[0];
+    if (tipo === 'demo') {
+      const comp = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE id=$1', [compartilhamento_id]);
+      resultado.demo_link = `${process.env.BASE_URL || 'https://felogix.com.br'}/track/${comp.rows[0].token}`;
+    }
+
+    res.json(resultado);
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ erro: 'Placa já cadastrada' });
     res.status(500).json({ erro: 'Erro interno' });

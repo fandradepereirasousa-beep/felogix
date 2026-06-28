@@ -299,6 +299,7 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
     </div>
   </div>
   <div class="content" id="mainContent"></div>
+  <div class="content" id="mapPane" style="display:none;overflow:hidden;"></div>
   <div class="bnav" id="bnav"></div>
 </div>
 
@@ -419,8 +420,10 @@ function initApp() {
 
 function logout() {
   clearInterval(liveTimer);
-  TOKEN = ''; CU = null; map = null; markers = {}; selV = null; VEHICLES = [];
+  if (map) { try { map.remove(); } catch(e) {} }
+  TOKEN = ''; CU = null; map = null; markers = {}; selV = null; VEHICLES = []; COMPARTILHAMENTOS = [];
   localStorage.removeItem('flx_token');
+  document.getElementById('mapPane').innerHTML = '';
   document.getElementById('appScreen').classList.remove('active');
   document.getElementById('ls').classList.add('active');
   document.getElementById('lEmail').value = '';
@@ -459,8 +462,14 @@ function goTab(id, el) {
   if (btn) btn.classList.add('on');
   currentTab = id; closeAvMenu();
   const c = document.getElementById('mainContent');
+  const mp = document.getElementById('mapPane');
+  if (id === 'mapa') {
+    c.style.display = 'none'; mp.style.display = '';
+    renderMapa(mp);
+    return;
+  }
+  mp.style.display = 'none'; c.style.display = '';
   const map_ = {
-    mapa:       () => renderMapa(c),
     clientes:   () => renderClientes(c),
     veiculos:   () => renderVeiculos(c),
     compartilhamentos: () => renderCompartilhamentos(c),
@@ -472,6 +481,11 @@ function goTab(id, el) {
 
 /* ─── MAPA ─── */
 function renderMapa(c) {
+  if (document.getElementById('mapWrap')) {
+    if (map) { map.invalidateSize(); centerAll(); }
+    loadVehicles();
+    return;
+  }
   c.innerHTML = `<div id="mapWrap" style="width:100%;height:100%;position:relative;">
     <div id="map"></div>
     <div class="map-sb open" id="mapSb">

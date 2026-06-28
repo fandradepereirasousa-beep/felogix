@@ -1223,6 +1223,7 @@ app.get('/track/:token', async (req, res) => {
         <span id="accuracyTxt">Precisão: --</span>
         <span id="speedTxt">Velocidade: --</span>
         <span id="timeTxt">Hora: --</span>
+        <span style="color:#1976D2;font-weight:600">⚠️ Deixe esta aba aberta e a tela acesa pra continuar enviando localização</span>
       </div>
       <div class="groupPanel" id="groupPanel" style="display:none">
         <div class="groupPanel-head">👨‍👩‍👧 Pessoas do grupo</div>
@@ -1242,6 +1243,15 @@ app.get('/track/:token', async (req, res) => {
       return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
     }
 
+    function fmtLastSeen(ts) {
+      if (!ts) return 'Sem sinal ainda';
+      const d = new Date(ts);
+      if (Date.now() - d.getTime() < 90000) return '🟢 Online agora';
+      const hhmm = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+      const hoje = d.toDateString() === new Date().toDateString();
+      return hoje ? ('Visto às ' + hhmm) : ('Visto em ' + d.toLocaleDateString('pt-BR') + ' ' + hhmm);
+    }
+
     const groupMarkers = {};
     async function loadGrupo() {
       try {
@@ -1253,10 +1263,10 @@ app.get('/track/:token', async (req, res) => {
         if (!Array.isArray(pessoas) || !pessoas.length) { panel.style.display = 'none'; return; }
         panel.style.display = 'block';
         list.innerHTML = pessoas.map(p => {
-          const online = p.ultimo_update && new Date(p.ultimo_update) > new Date(Date.now()-60000);
+          const online = p.ultimo_update && new Date(p.ultimo_update) > new Date(Date.now()-90000);
           const nome = escHtml(p.nome || 'Sem nome');
           const thumb = p.foto ? \`<img class="group-thumb" src="\${escHtml(p.foto)}">\` : \`<div class="group-thumb">🙂</div>\`;
-          return \`<div class="group-item">\${thumb}<div class="group-name">\${nome}</div><div class="group-dot \${online?'online':'offline'}"></div></div>\`;
+          return \`<div class="group-item">\${thumb}<div class="group-name">\${nome}<div style="font-size:11px;color:#888;font-weight:400">\${fmtLastSeen(p.ultimo_update)}</div></div><div class="group-dot \${online?'online':'offline'}"></div></div>\`;
         }).join('');
         Object.keys(groupMarkers).forEach(k => {
           if (parseInt(k.slice(1)) >= pessoas.length) { map.removeLayer(groupMarkers[k]); delete groupMarkers[k]; }
@@ -1315,12 +1325,18 @@ app.get('/track/:token', async (req, res) => {
       }
     }
 
+    let wakeLock = null;
+    async function pedirWakeLock() {
+      try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+    }
+
     function startTracking() {
       if (!navigator.geolocation) return alert('GPS não disponível');
       watching = true;
       document.getElementById('btnStart').textContent = '⏹ Parar';
       document.getElementById('statusDot').className = 'dot online';
       document.getElementById('statusTxt').textContent = 'Rastreando (em tempo real)...';
+      pedirWakeLock();
 
       watchId = navigator.geolocation.watchPosition(
         pos => {
@@ -1355,6 +1371,25 @@ app.get('/track/:token', async (req, res) => {
       document.getElementById('statusDot').className = 'dot offline';
       document.getElementById('statusTxt').textContent = 'Parado';
     }
+
+    document.addEventListener('visibilitychange', () => {
+      if (!watching) return;
+      if (document.hidden) {
+        document.getElementById('statusDot').className = 'dot offline';
+        document.getElementById('statusTxt').textContent = '⏸ Em segundo plano — volte pra essa aba pra continuar enviando';
+      } else {
+        document.getElementById('statusDot').className = 'dot online';
+        document.getElementById('statusTxt').textContent = 'Rastreando (em tempo real)...';
+        pedirWakeLock();
+        navigator.geolocation.getCurrentPosition(pos => {
+          fetch(\`/api/compartilhamentos/\${TOKEN}/location\`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, precisao: pos.coords.accuracy, velocidade: pos.coords.speed || 0, direcao: pos.coords.heading || 0 })
+          }).catch(() => {});
+        }, () => {}, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+      }
+    });
 
     document.getElementById('btnStart').onclick = () => watching ? stopTracking() : startTracking();
     startTracking();

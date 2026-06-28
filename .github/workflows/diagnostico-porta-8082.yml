@@ -1,0 +1,47 @@
+name: Diagnóstico porta 8082 no VPS
+
+# Disparo manual, somente leitura — não instala, não reinicia e não altera
+# nada no servidor. Serve só para identificar o que já está rodando na
+# porta 8082 antes de decidir qualquer próximo passo no Traccar.
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspecionar porta 8082 (somente leitura)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: false
+          script: |
+            echo "--- processo escutando em 8082 (ss) ---"
+            (ss -ltnp 2>/dev/null | grep ':8082 ') || echo "(nada via ss)"
+
+            echo "--- containers docker existentes (todos, sem alterar nada) ---"
+            command -v docker &> /dev/null && docker ps -a || echo "(docker não instalado)"
+
+            echo "--- processos do pm2 (sem alterar nada) ---"
+            command -v pm2 &> /dev/null && pm2 list || echo "(pm2 não encontrado)"
+
+            echo "--- resposta HTTP em localhost:8082/api/server (só GET, não altera nada) ---"
+            CODE=$(curl -s -o /tmp/resp_8082.json -w "%{http_code}" http://localhost:8082/api/server || echo 000)
+            echo "HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo "Corpo da resposta (info pública de versão/servidor, sem credenciais):"
+              cat /tmp/resp_8082.json
+              echo ""
+            fi
+            rm -f /tmp/resp_8082.json
+
+            echo "--- quem é o dono do processo na porta 8082 (ps, sem matar nada) ---"
+            PID=$(ss -ltnp 2>/dev/null | grep ':8082 ' | grep -oP 'pid=\K[0-9]+' | head -1)
+            if [ -n "$PID" ]; then
+              ps -p "$PID" -o pid,ppid,user,cmd
+            else
+              echo "(não foi possível identificar o PID via ss — pode exigir sudo, nada será forçado)"
+            fi

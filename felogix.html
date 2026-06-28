@@ -806,24 +806,26 @@ async function renderVeiculos(c) {
         vs.map(v => {
           const stKey = v.bloqueado?'blocked':'offline';
           const stTxt = {moving:'▶ Em rota',stopped:'■ Parado',offline:'● Offline',blocked:'🔒 Bloqueado'};
+          const isDemo = v.compartilhamento_id !== null;
+          const typeIcon = isDemo ? '📱 Demo' : '📡 Real';
           return `<div class="card">
             <div class="card-top">
               <div class="card-info">
                 <div class="card-title">${v.placa}</div>
                 <div class="card-sub">${v.modelo||'—'} ${v.ano||''} · ${v.cor||'—'}</div>
-                ${CU.role==='admin'?`<div class="card-sub" style="margin-top:2px">👤 ${v.cliente_nome||'—'}</div>`:''}
+                ${CU.role==='admin'?`<div class="card-sub" style="margin-top:2px">👤 ${v.cliente_nome||'—'} · ${typeIcon}</div>`:''}
               </div>
-              <span class="badge badge-${stKey}">${stTxt[stKey]||stKey}</span>
+              <span class="badge badge-${isDemo?'amber':stKey}">${isDemo?'📱 Demo (7 dias)':stTxt[stKey]||stKey}</span>
             </div>
             <div class="kpis-row">
               <div class="kpi-box"><div class="v" style="color:var(--t2)">—</div><div class="l">km/h</div></div>
-              <div class="kpi-box"><div class="v">${v.imei?'📡':'—'}</div><div class="l">IMEI</div></div>
-              <div class="kpi-box"><div class="v" style="font-size:10px;color:var(--t2)">offline</div><div class="l">Sinal</div></div>
+              <div class="kpi-box"><div class="v">${isDemo?'📱':v.imei?'📡':'—'}</div><div class="l">${isDemo?'Link':'IMEI'}</div></div>
+              <div class="kpi-box"><div class="v" style="font-size:10px;color:var(--t2)">${isDemo?'ativo':'offline'}</div><div class="l">Status</div></div>
             </div>
             <div class="acts-row">
               <div class="act-btn" onclick="goTab('mapa');setTimeout(()=>openBS(${v.id}),300)">🗺 Ver no mapa</div>
               ${CU.role==='admin'?`<div class="act-btn blue" onclick="openEditVeiculo(${JSON.stringify(v).replace(/"/g,'&quot;')})">✏️ Editar</div>`:''}
-              <div class="act-btn ${v.bloqueado?'green':'red'}" onclick="toggleBlock(${v.id})">${v.bloqueado?'✅ Desbloquear':'🔒 Bloquear'}</div>
+              ${isDemo?`<div class="act-btn green" onclick="showDemoLink(${v.compartilhamento_id})">📋 Ver Link</div>`:'<div class="act-btn" onclick="toggleBlock(${v.id})">${v.bloqueado?'✅ Desbloquear':'🔒 Bloquear'}</div>'}
             </div>
           </div>`;
         }).join('')}
@@ -837,7 +839,20 @@ async function openAddVeiculo() {
   document.getElementById('mTitle').textContent = 'Adicionar veículo';
   document.getElementById('mBody').innerHTML = `
     <div class="mf"><label>Placa</label><input id="vPlaca" placeholder="ABC-1234" style="text-transform:uppercase"/></div>
-    <div class="mf"><label>IMEI do rastreador</label><input id="vImei" placeholder="Ex: 358899012345678"/></div>
+    <div class="mf"><label>Tipo de Rastreamento</label>
+      <div style="display:flex;gap:12px;margin-top:8px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="radio" name="vTipo" value="real" checked onchange="toggleVeiculoTipo()"/> 🚗 Rastreador Real (IMEI)
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="radio" name="vTipo" value="demo" onchange="toggleVeiculoTipo()"/> 📱 Demo (7 dias grátis)
+        </label>
+      </div>
+    </div>
+    <div class="mf" id="vImeiField"><label>IMEI do rastreador</label><input id="vImei" placeholder="Ex: 358899012345678"/></div>
+    <div id="vDemoInfo" style="display:none;font-size:12px;color:var(--t2);background:var(--s2);padding:12px;border-radius:8px;margin-bottom:12px">
+      📱 Um link será gerado automaticamente. Compartilhe com o cliente para testar 7 dias grátis!
+    </div>
     <div class="mf"><label>Modelo</label><input id="vModelo" placeholder="Ex: Fiat Strada"/></div>
     <div class="mf-row">
       <div class="mf"><label>Ano</label><input id="vAno" type="number" placeholder="2024"/></div>
@@ -852,7 +867,14 @@ async function openAddVeiculo() {
   openModal();
 }
 
+function toggleVeiculoTipo() {
+  const tipo = document.querySelector('input[name="vTipo"]:checked').value;
+  document.getElementById('vImeiField').style.display = tipo==='real'?'block':'none';
+  document.getElementById('vDemoInfo').style.display = tipo==='demo'?'block':'none';
+}
+
 async function saveVeiculo() {
+  const tipo = document.querySelector('input[name="vTipo"]:checked').value;
   const body = {
     placa: document.getElementById('vPlaca').value.trim().toUpperCase(),
     imei:  document.getElementById('vImei').value.trim()||null,
@@ -860,13 +882,36 @@ async function saveVeiculo() {
     ano:   parseInt(document.getElementById('vAno').value)||2024,
     cor:   document.getElementById('vCor').value.trim(),
     cliente_id: parseInt(document.getElementById('vCliente').value),
+    tipo: tipo
   };
   if (!body.placa||!body.cliente_id) return toast('Placa e cliente são obrigatórios','err');
   try {
-    await api('POST','/api/veiculos',body);
-    closeModal(); toast(`${body.placa} adicionado ✅`,'ok');
-    renderVeiculos(document.getElementById('mainContent'));
-    loadVehicles();
+    const resultado = await api('POST','/api/veiculos',body);
+    closeModal();
+
+    if (tipo === 'demo' && resultado.demo_link) {
+      document.getElementById('mTitle').textContent = '📱 Link de Rastreamento Gerado!';
+      document.getElementById('mBody').innerHTML = `
+        <div style="text-align:center;padding:20px">
+          <div style="font-size:14px;color:var(--t2);margin-bottom:16px">
+            ✅ Veículo <strong>${body.placa}</strong> adicionado com sucesso!
+          </div>
+          <div style="background:var(--s2);padding:16px;border-radius:8px;margin-bottom:16px">
+            <div style="font-size:11px;color:var(--t3);margin-bottom:6px">LINK DE RASTREAMENTO (7 dias)</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:12px;word-break:break-all;background:var(--s1);padding:12px;border-radius:4px;margin-bottom:10px">${resultado.demo_link}</div>
+            <button class="mbtn" onclick="copyToClipboard('${resultado.demo_link}'); toast('Link copiado!','ok')">📋 Copiar Link</button>
+          </div>
+          <div style="font-size:12px;color:var(--t2);background:rgba(52,168,224,.1);padding:12px;border-radius:8px">
+            📲 Compartilhe este link com o cliente via WhatsApp ou Email<br>Cliente abre no celular e já começa a rastrear!
+          </div>
+          <button class="mbtn sec" onclick="closeModal(); renderVeiculos(document.getElementById('mainContent')); loadVehicles();" style="margin-top:16px">Concluído</button>
+        </div>`;
+      openModal();
+    } else {
+      toast(`${body.placa} adicionado ✅`,'ok');
+      renderVeiculos(document.getElementById('mainContent'));
+      loadVehicles();
+    }
   } catch(e) { toast(e.message,'err'); }
 }
 
@@ -904,6 +949,29 @@ async function deleteVeiculo(id) {
     closeModal(); toast('Veículo removido','ok');
     renderVeiculos(document.getElementById('mainContent'));
     loadVehicles();
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function showDemoLink(compId) {
+  try {
+    const comps = await api('GET', '/api/compartilhamentos');
+    const comp = comps.find(c => c.id === compId);
+    if (!comp) return toast('Link não encontrado','err');
+    const link = window.location.origin + '/track/' + comp.token;
+    document.getElementById('mTitle').textContent = '📱 Link de Rastreamento';
+    document.getElementById('mBody').innerHTML = `
+      <div style="text-align:center;padding:20px">
+        <div style="background:var(--s2);padding:16px;border-radius:8px;margin-bottom:16px">
+          <div style="font-size:11px;color:var(--t3);margin-bottom:6px">LINK (7 DIAS DE TESTE)</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12px;word-break:break-all;background:var(--s1);padding:12px;border-radius:4px;margin-bottom:10px">${link}</div>
+          <button class="mbtn" onclick="copyToClipboard('${link}'); toast('Link copiado!','ok')">📋 Copiar Link</button>
+        </div>
+        <div style="font-size:12px;color:var(--t2)">
+          ✅ Compartilhe com seu cliente via WhatsApp ou Email<br>Cliente abre no celular para rastrear!
+        </div>
+        <button class="mbtn sec" onclick="closeModal()" style="margin-top:16px">Fechar</button>
+      </div>`;
+    openModal();
   } catch(e) { toast(e.message,'err'); }
 }
 

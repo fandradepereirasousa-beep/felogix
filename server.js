@@ -885,7 +885,7 @@ app.get('/api/grupos/:id/pessoas', auth, adminOnly, async (req, res) => {
   res.json(r.rows);
 });
 
-app.post('/api/grupos/:id/pessoas', auth, adminOnly, async (req, res) => {
+app.post('/api/grupos/:id/pessoas', auth, adminOnly, uploadFoto, async (req, res) => {
   const grupoId = parseInt(req.params.id);
   if (!grupoId) return res.status(400).json({ erro: 'Grupo inválido' });
   const nome = (req.body.nome || 'Nova pessoa').trim();
@@ -894,9 +894,10 @@ app.post('/api/grupos/:id/pessoas', auth, adminOnly, async (req, res) => {
     const grupo = await pool.query('SELECT cliente_id FROM grupos_rastreamento WHERE id=$1', [grupoId]);
     if (!grupo.rows.length) return res.status(404).json({ erro: 'Grupo não encontrado' });
     const token = crypto.randomBytes(24).toString('hex');
+    const foto = req.file ? '/uploads/' + req.file.filename : null;
     const r = await pool.query(
-      'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, tipo, grupo_id, ativo) VALUES ($1, $2, $3, $4, $5, true) RETURNING *',
-      [grupo.rows[0].cliente_id, token, nome, 'pessoa', grupoId]
+      'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, tipo, grupo_id, ativo, foto) VALUES ($1, $2, $3, $4, $5, true, $6) RETURNING *',
+      [grupo.rows[0].cliente_id, token, nome, 'pessoa', grupoId, foto]
     );
     res.json({ ...r.rows[0], link: `${process.env.BASE_URL || 'https://felogix.com.br'}/track/${token}` });
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
@@ -918,6 +919,22 @@ app.put('/api/track/:token/perfil', uploadFoto, async (req, res) => {
     vals.push(req.params.token);
     const r = await pool.query(`UPDATE rastreadores_compartilhados SET ${sets.join(',')} WHERE token=$${i} RETURNING nome, foto`, vals);
     res.json({ ok: true, ...r.rows[0] });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+/* ─── GRUPO: outras pessoas do mesmo grupo (visível na página pública do link) ─── */
+app.get('/api/track/:token/grupo', async (req, res) => {
+  try {
+    const own = await pool.query('SELECT grupo_id FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    if (!own.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
+    const grupoId = own.rows[0].grupo_id;
+    if (!grupoId) return res.json([]);
+    const r = await pool.query(
+      `SELECT nome, foto, latitude, longitude, ultimo_update FROM rastreadores_compartilhados
+       WHERE grupo_id=$1 AND ativo=true AND token<>$2 ORDER BY nome`,
+      [grupoId, req.params.token]
+    );
+    res.json(r.rows);
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
@@ -1098,6 +1115,15 @@ app.get('/track/:token', async (req, res) => {
     .editPanel label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; }
     .editPanel input[type=text] { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; margin-bottom: 8px; }
     .editPanel button { margin-top: 4px; }
+    .groupPanel { background: white; padding: 10px 15px; border-radius: 4px; margin-top: 10px; font-size: 13px; }
+    .groupPanel-head { font-weight: 600; color: #222; margin-bottom: 8px; }
+    .group-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #eee; }
+    .group-item:first-child { border-top: none; }
+    .group-thumb { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; background: #e0e0e0; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+    .group-name { flex: 1; color: #222; }
+    .group-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .group-dot.online { background: #4CAF50; }
+    .group-dot.offline { background: #999; }
   </style>
 </head>
 <body>
@@ -1127,6 +1153,10 @@ app.get('/track/:token', async (req, res) => {
         <span id="speedTxt">Velocidade: --</span>
         <span id="timeTxt">Hora: --</span>
       </div>
+      <div class="groupPanel" id="groupPanel" style="display:none">
+        <div class="groupPanel-head">👨‍👩‍👧 Pessoas do grupo</div>
+        <div id="groupList"></div>
+      </div>
     </div>
     <div id="map"></div>
   </div>
@@ -1136,6 +1166,39 @@ app.get('/track/:token', async (req, res) => {
     const TOKEN = '${req.params.token}';
 
     function toggleEditPanel() { document.getElementById('editPanel').classList.toggle('open'); }
+
+    function escHtml(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+    }
+
+    const groupMarkers = {};
+    async function loadGrupo() {
+      try {
+        const resp = await fetch(\`/api/track/\${TOKEN}/grupo\`);
+        if (!resp.ok) return;
+        const pessoas = await resp.json();
+        const panel = document.getElementById('groupPanel');
+        const list = document.getElementById('groupList');
+        if (!Array.isArray(pessoas) || !pessoas.length) { panel.style.display = 'none'; return; }
+        panel.style.display = 'block';
+        list.innerHTML = pessoas.map(p => {
+          const online = p.ultimo_update && new Date(p.ultimo_update) > new Date(Date.now()-60000);
+          const nome = escHtml(p.nome || 'Sem nome');
+          const thumb = p.foto ? \`<img class="group-thumb" src="\${escHtml(p.foto)}">\` : \`<div class="group-thumb">🙂</div>\`;
+          return \`<div class="group-item">\${thumb}<div class="group-name">\${nome}</div><div class="group-dot \${online?'online':'offline'}"></div></div>\`;
+        }).join('');
+        Object.keys(groupMarkers).forEach(k => {
+          if (parseInt(k.slice(1)) >= pessoas.length) { map.removeLayer(groupMarkers[k]); delete groupMarkers[k]; }
+        });
+        pessoas.forEach((p, idx) => {
+          if (!p.latitude || !p.longitude) return;
+          const lat = parseFloat(p.latitude), lon = parseFloat(p.longitude);
+          const id = 'g' + idx;
+          if (groupMarkers[id]) { groupMarkers[id].setLatLng([lat, lon]); }
+          else { groupMarkers[id] = L.circleMarker([lat, lon], { radius: 7, fillColor: '#9C27B0', color: 'white', weight: 2, opacity: 1, fillOpacity: 0.8 }).addTo(map); }
+        });
+      } catch (e) {}
+    }
 
     async function salvarPerfil() {
       const btn = document.getElementById('btnSalvarPerfil');
@@ -1224,6 +1287,8 @@ app.get('/track/:token', async (req, res) => {
 
     document.getElementById('btnStart').onclick = () => watching ? stopTracking() : startTracking();
     startTracking();
+    loadGrupo();
+    setInterval(loadGrupo, 15000);
   </script>
 </body>
 </html>`);

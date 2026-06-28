@@ -488,8 +488,13 @@ async function loadVehicles() {
       speed: 0, lat: -23.55 + Math.random()*.08, lng: -46.63 + Math.random()*.08,
       ignition: false, updated: 'offline'
     }));
-    updateMapList();
     if (map) { Object.values(markers).forEach(m => map.removeLayer(m)); markers = {}; VEHICLES.forEach(v => addMkr(v)); centerAll(); }
+    try {
+      const comps = await api('GET', '/api/compartilhamentos');
+      COMPARTILHAMENTOS = comps.map(c => ({ ...c, tipo: 'compartilhamento' }));
+    } catch(e) {}
+    syncMkrs();
+    updateMapList();
   } catch(e) { console.error(e); }
 }
 
@@ -508,10 +513,11 @@ function updateMapList() {
       <div style="font-size:10px;color:var(--t2)">${v.speed>0?v.speed+' km/h':'—'}</div></div>
     </div>`;
   }).join('');
-  const compsHtml = COMPARTILHAMENTOS.filter(c => c.latitude && c.longitude).map(c => {
+  const compsHtml = COMPARTILHAMENTOS.map(c => {
     const dotC = c.ultimo_update && new Date(c.ultimo_update) > new Date(Date.now()-60000) ? 'moving' : 'offline';
+    const loc = c.latitude && c.longitude ? `${parseFloat(c.latitude).toFixed(4)} ${parseFloat(c.longitude).toFixed(4)}` : 'Aguardando localização…';
     return `<div class="vmc" style="background:rgba(255,152,0,.1)" onclick="openBSPerson(${c.id})">
-      <div class="vmc-r1"><div class="sdot ${dotC}"></div><div style="flex:1"><div class="vmc-plate" style="font-size:11px">📱 ${c.nome}</div><div style="font-size:9px;color:var(--t2)">${parseFloat(c.latitude).toFixed(4)} ${parseFloat(c.longitude).toFixed(4)}</div></div></div>
+      <div class="vmc-r1"><div class="sdot ${dotC}"></div><div style="flex:1"><div class="vmc-plate" style="font-size:11px">📱 ${c.nome}</div><div style="font-size:9px;color:var(--t2)">${loc}</div></div></div>
     </div>`;
   }).join('');
   el.innerHTML = vehiclesHtml + compsHtml;
@@ -550,6 +556,7 @@ function addMkr(v) {
 }
 
 function syncMkrs() {
+  if (!map) return;
   VEHICLES.forEach(v => {
     if (markers[v.id]) { markers[v.id].setLatLng([v.lat,v.lng]); markers[v.id].setIcon(mkIcon(v)); }
   });
@@ -1258,6 +1265,7 @@ function openAddPessoa(grupoId) {
   document.getElementById('mTitle').textContent = 'Adicionar Pessoa ao Grupo';
   document.getElementById('mBody').innerHTML = `
     <div class="mf"><label>Nome da Pessoa</label><input id="pessoaNome" placeholder="Ex: João, ou deixe em branco para a pessoa escolher"/></div>
+    <div class="mf"><label>Foto (opcional)</label><input id="pessoaFoto" type="file" accept="image/jpeg,image/png,image/webp"/></div>
     <div style="font-size:12px;color:var(--t2);margin:12px 0;padding:12px;background:var(--s2);border-radius:8px">
       📱 Um link único será gerado. Quem abrir pelo celular pode editar o próprio nome e foto.
     </div>
@@ -1268,7 +1276,15 @@ function openAddPessoa(grupoId) {
 async function savePessoa(grupoId) {
   const nome = document.getElementById('pessoaNome').value.trim() || 'Nova pessoa';
   try {
-    await api('POST', `/api/grupos/${grupoId}/pessoas`, {nome});
+    const arquivoFoto = document.getElementById('pessoaFoto')?.files[0];
+    if (arquivoFoto) {
+      const fd = new FormData();
+      fd.append('nome', nome);
+      fd.append('foto', arquivoFoto);
+      await apiUpload('POST', `/api/grupos/${grupoId}/pessoas`, fd);
+    } else {
+      await api('POST', `/api/grupos/${grupoId}/pessoas`, {nome});
+    }
     closeModal(); toast(`Link de "${nome}" criado ✅`,'ok');
     await renderCompartilhamentos(document.getElementById('mainContent'));
     togglePessoas(grupoId);

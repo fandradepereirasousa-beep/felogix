@@ -78,22 +78,60 @@ sob `/connect` como produto separado, ou manter como está dentro de Track.
 ---
 
 ## VERTICAL 4 — Felogix Patrol
-Gerenciamento, auditoria e fechamento de plantão de rondas patrimoniais
-(segurança privada, portarias).
+Sistema de auditoria de produtividade, gerenciamento de rondas e controle
+operacional para vigilantes e supervisores (segurança privada, portarias).
 
 **Acesso:** gestor cria credenciais (Nome + RE) na web; login individual por
 vigilante para auditoria legal do plantão.
 
-**Modalidades de ronda (mobile):**
-- Ronda a pé: leitura de QR Code nos Pontos de Interesse, validado contra
-  horário + GPS do celular; permite anexar fotos como comprovação.
-- Ronda veicular: GPS em segundo plano, gestor desenha microcercas virtuais
-  nos pontos de interesse; baixa automática ao passar, sem precisar descer.
+### A. Fluxo de jornada e rastreamento ativo
+- Início do plantão: check-in com validação de localização; ativa
+  rastreamento contínuo em segundo plano (logs de trajeto, velocidade e
+  tempo de permanência em cada coordenada).
+- Fechamento do plantão: ao encerrar, o sistema compila os dados em um
+  relatório PDF consolidado.
+- ⚠️ **Conflito com política vigente, sinalizado e não resolvido
+  silenciosamente:** o pedido original prevê esse PDF sendo enviado
+  *automaticamente* por e-mail ao gestor/coordenador do grupo. Isso colide
+  direto com a regra "proibido disparar e-mail automático de qualquer
+  alerta/evento sem autorização explícita" (ver Notas de arquitetura, abaixo
+  — mesma regra já aplicada ao motor de alertas do Track). Até segunda
+  ordem: o PDF de fechamento fica disponível para download/visualização
+  manual no painel do gestor, **sem envio automático por e-mail**. Abrir uma
+  exceção pontual de envio automático para este relatório exige autorização
+  explícita antes de qualquer implementação.
 
-**Produtividade e relatório:**
-- Controle de status (Almoço, Banheiro, QAP) com alerta de ociosidade
-- Relatório de fechamento de plantão em PDF: identificação, taxa de
-  eficiência, linha do tempo de passagens, ocorrências com fotos
+### B. Gestão de pausas e justificativas (módulo vigilante)
+Botões específicos para o colaborador pausar a atividade e justificar o
+tempo ocioso:
+- Pausas sem foto (privacidade): "Almoço/Refeição" e "Banheiro/Pausa
+  Fisiológica" — registra apenas geolocalização e duração.
+- Pausas com foto (operacionais): "Atendimento de Ocorrência" (exige foto
+  da anormalidade) e "Manutenção/Abastecimento da Viatura" (exige foto do
+  odômetro ou cupom).
+
+### C. Adaptação de perfil (Vigilante de posto vs. Supervisor)
+- **Perfil Vigilante** (operação local): valida pontos de interesse por três
+  métodos configuráveis — 1) leitura de QR Code gerado pelo painel Patrol e
+  colado no cliente; 2) foto do ponto de interesse, cruzada com a coordenada
+  GPS no momento da captura (antifraude); 3) passagem veicular automatizada
+  (geocerca).
+- **Perfil Supervisor/Coordenador** (visita e fiscalização): foco na
+  auditoria de postos e clientes — app exige registro fotográfico na frente
+  do cliente ou junto com a equipe/vigilante do posto visitado; localização
+  exata capturada em segundo plano no momento da foto.
+
+### D. Regra de contagem para ronda veicular
+O rastreador integrado ao app computa de forma **cumulativa** todas as
+passagens pelas cercas virtuais dos pontos de interesse — se o veículo
+passar pelo mesmo ponto 10 vezes, o sistema registra os 10 carimbos de
+data/hora individualmente na linha do tempo, além do tempo exato que o
+veículo permaneceu parado em cada localidade.
+
+**Relatório de fechamento de plantão (PDF):** identificação, taxa de
+eficiência, linha do tempo de passagens (QR/foto/geocerca), ocorrências com
+fotos — disponível para download manual no painel (ver conflito de e-mail
+automático no item A).
 
 **Status de implementação:** ❌ Nada implementado. Vertical inteiramente nova.
 

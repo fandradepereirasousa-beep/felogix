@@ -415,12 +415,14 @@ async function initDB() {
       cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
       token VARCHAR(50) UNIQUE NOT NULL,
       nome VARCHAR(100),
+      tipo VARCHAR(20) DEFAULT 'permanente',
       latitude DECIMAL(10,8),
       longitude DECIMAL(11,8),
       precisao DECIMAL(10,2),
       velocidade DECIMAL(10,2),
       direcao DECIMAL(10,2),
       ativo BOOLEAN DEFAULT true,
+      expira_em TIMESTAMP,
       ultimo_update TIMESTAMP,
       criado_em TIMESTAMP DEFAULT NOW()
     );
@@ -437,6 +439,12 @@ async function initDB() {
   try {
     await pool.query(`ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS compartilhamento_id INTEGER REFERENCES rastreadores_compartilhados(id) ON DELETE SET NULL`);
   } catch (e) { console.warn('Migração veiculos compartilhamento_id:', e.message); }
+  try {
+    await pool.query(`ALTER TABLE rastreadores_compartilhados ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'permanente'`);
+  } catch (e) { console.warn('Migração rastreadores_compartilhados tipo:', e.message); }
+  try {
+    await pool.query(`ALTER TABLE rastreadores_compartilhados ADD COLUMN IF NOT EXISTS expira_em TIMESTAMP`);
+  } catch (e) { console.warn('Migração rastreadores_compartilhados expira_em:', e.message); }
   // Migração: modo de cobrança do personalizado (fixo | por_veiculo) e tabela de config
   await pool.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS cobranca_modo VARCHAR(20)`);
   await pool.query(`CREATE TABLE IF NOT EXISTS config (chave VARCHAR(50) PRIMARY KEY, valor TEXT)`);
@@ -642,34 +650,38 @@ app.post('/api/veiculos', auth, adminOnly, async (req, res) => {
   const { placa, imei, modelo, ano, cor, cliente_id, tipo } = req.body;
   if (!placa || !cliente_id) return res.status(400).json({ erro: 'Placa e cliente são obrigatórios' });
   if (!/^[A-Z0-9\-]{4,10}$/i.test(placa)) return res.status(400).json({ erro: 'Placa inválida' });
+  if (tipo === 'imei' && !imei) return res.status(400).json({ erro: 'IMEI é obrigatório para rastreador real' });
   try {
     let compartilhamento_id = null;
 
-    // Se for demo (compartilhamento), gera link automático
-    if (tipo === 'demo') {
+    // Se for teste (7 dias) ou permanente, gera link automático
+    if (tipo === 'teste_7dias' || tipo === 'permanente') {
       const token = require('crypto').randomBytes(24).toString('hex');
+      const expiraEm = tipo === 'teste_7dias' ? new Date(Date.now() + 7*24*60*60*1000) : null;
       const comp = await pool.query(
-        'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, ativo) VALUES ($1, $2, $3, true) RETURNING *',
-        [parseInt(cliente_id), token, placa.trim()]
+        'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, tipo, expira_em, ativo) VALUES ($1, $2, $3, $4, $5, true) RETURNING *',
+        [parseInt(cliente_id), token, placa.trim(), tipo === 'teste_7dias' ? 'teste' : 'permanente', expiraEm]
       );
       compartilhamento_id = comp.rows[0].id;
     }
 
     const r = await pool.query(
       'INSERT INTO veiculos (cliente_id,placa,imei,modelo,ano,cor,compartilhamento_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-      [parseInt(cliente_id), placa.toUpperCase().trim(), imei?.trim()||null, modelo?.trim()||'Veículo', parseInt(ano)||2024, cor?.trim()||'—', compartilhamento_id]
+      [parseInt(cliente_id), placa.toUpperCase().trim(), tipo==='imei'?imei?.trim():null, modelo?.trim()||'Veículo', parseInt(ano)||2024, cor?.trim()||'—', compartilhamento_id]
     );
 
-    // Retorna com link se for demo
+    // Retorna com link se for teste ou permanente
     const resultado = r.rows[0];
-    if (tipo === 'demo') {
+    if (tipo !== 'imei') {
       const comp = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE id=$1', [compartilhamento_id]);
       resultado.demo_link = `${process.env.BASE_URL || 'https://felogix.com.br'}/track/${comp.rows[0].token}`;
+      resultado.link_tipo = tipo === 'teste_7dias' ? '⏰ Teste 7 dias' : '📱 Link Permanente';
     }
 
     res.json(resultado);
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ erro: 'Placa já cadastrada' });
+    console.error('Erro ao adicionar veículo:', err);
     res.status(500).json({ erro: 'Erro interno' });
   }
 });

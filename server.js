@@ -15,6 +15,9 @@ const multer     = require('multer');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+const httpServer = http.createServer(app);
+const wss = new WebSocket.Server({ server: httpServer, path: '/ws' });
+const wsClients = new Set(); // ws com .user (payload do JWT) anexado
 
 /* ─── SEGREDOS — nunca hardcoded ─── */
 const JWT_SECRET = process.env.JWT_SECRET || 'flx_' + require('crypto').randomBytes(32).toString('hex');
@@ -155,6 +158,32 @@ function auth(req, res, next) {
 function adminOnly(req, res, next) {
   if (req.user.role !== 'admin') return res.status(403).json({ erro: 'Sem permissão' });
   next();
+}
+
+/* ─── WEBSOCKET (posições em tempo real) ─── */
+wss.on('connection', (ws, req) => {
+  let user;
+  try {
+    const token = new URL(req.url, 'http://localhost').searchParams.get('token');
+    user = jwt.verify(token, JWT_SECRET);
+  } catch (e) {
+    return ws.close(1008, 'unauthorized');
+  }
+  ws.user = user;
+  wsClients.add(ws);
+  ws.on('close', () => wsClients.delete(ws));
+  ws.on('error', () => wsClients.delete(ws));
+});
+
+function wsSend(ws, payload) {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+}
+
+function wsBroadcastScoped(type, items, clienteIdOf) {
+  wsClients.forEach(ws => {
+    const data = ws.user.role === 'admin' ? items : items.filter(i => clienteIdOf(i) === ws.user.id);
+    wsSend(ws, { type, data });
+  });
 }
 
 async function sendMail(to, subject, html) {
@@ -813,7 +842,7 @@ app.delete('/api/veiculos/:id', auth, adminOnly, async (req, res) => {
 });
 
 /* ─── POSIÇÕES (Traccar Integration) ─── */
-app.get('/api/posicoes', auth, async (req, res) => {
+async function getPosicoesEnriquecidas() {
   const posicoes = await obterPosicoesTraccar();
 
   // Enriquecer com dados do banco
@@ -830,8 +859,23 @@ app.get('/api/posicoes', auth, async (req, res) => {
       });
     }
   }
+  return result;
+}
+
+app.get('/api/posicoes', auth, async (req, res) => {
+  const result = await getPosicoesEnriquecidas();
   res.json(req.user.role === 'admin' ? result : result.filter(r => r.cliente_id === req.user.id));
 });
+
+// Empurra posições via WebSocket pros clientes conectados, no mesmo ritmo do polling do Traccar
+async function broadcastPosicoes() {
+  if (!wsClients.size) return;
+  try {
+    const result = await getPosicoesEnriquecidas();
+    wsBroadcastScoped('posicoes', result, r => r.cliente_id);
+  } catch (e) { console.error('Erro no broadcast de posições:', e.message); }
+}
+setInterval(broadcastPosicoes, 5000);
 
 app.get('/api/veiculos/:id/historico', auth, async (req, res) => {
   const id = parseInt(req.params.id);
@@ -934,6 +978,8 @@ app.post('/api/compartilhamentos/:token/location', async (req, res) => {
       [parseFloat(latitude), parseFloat(longitude), parseFloat(precisao)||0, parseFloat(velocidade)||0, parseFloat(direcao)||0, req.params.token]
     );
     if (!r.rows.length) return res.status(404).json({ erro: 'Token não encontrado' });
+    const { senha_hash, ...comp } = r.rows[0];
+    wsBroadcastScoped('compartilhamento', [comp], c => c.cliente_id);
     const id = r.rows[0].id;
     const agora = Date.now();
     if (!ultimoHistorico.has(id) || agora - ultimoHistorico.get(id) >= 30000) {
@@ -1601,7 +1647,7 @@ app.use((err, req, res, next) => {
 });
 
 initDB().then(() => {
-  app.listen(PORT, '127.0.0.1', () => console.log(`Felogix v2.3 rodando na porta ${PORT}`));
+  httpServer.listen(PORT, '127.0.0.1', () => console.log(`Felogix v2.3 rodando na porta ${PORT}`));
   verificarLembreteMensal();                                   // lembra o admin (não envia ao cliente)
   setInterval(verificarLembreteMensal, 6 * 60 * 60 * 1000);    // e a cada 6 horas
 }).catch(err => { console.error('DB error:', err); process.exit(1); });

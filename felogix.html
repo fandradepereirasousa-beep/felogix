@@ -9,6 +9,9 @@
 <title>Felogix Track</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap');
 :root{
@@ -90,6 +93,8 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
 .leaflet-container{background:var(--bg);}
 .leaflet-control-zoom a{background:rgba(12,12,12,.88)!important;color:#fff!important;border-color:var(--b1)!important;}
 .leaflet-control-attribution{background:rgba(0,0,0,.45)!important;color:rgba(255,255,255,.55)!important;font-size:8px!important;}
+.marker-cluster{background:rgba(217,26,26,.25)!important;}
+.marker-cluster div{background:var(--red)!important;color:#fff!important;font-family:'JetBrains Mono',monospace;font-weight:700;}
 .leaflet-control-attribution a{color:rgba(255,255,255,.65)!important;}
 .map-sb{position:absolute;top:0;right:0;bottom:0;width:260px;max-width:78vw;background:rgba(12,12,12,.97);border-left:1px solid var(--b1);backdrop-filter:blur(12px);z-index:100;transform:translateX(100%);transition:transform .28s ease;display:flex;flex-direction:column;}
 .map-sb.open{transform:translateX(0);}
@@ -321,7 +326,8 @@ let TOKEN = localStorage.getItem('flx_token') || '';
 let CU = null;
 let map = null, markers = {}, selV = null, mapSbOpen = true, currentTab = '';
 let VEHICLES = [], COMPARTILHAMENTOS = [], liveTimer = null, trailLine = null;
-let tileLayer = null, mapRetryTimer = null;
+let tileLayer = null, mapRetryTimer = null, clusterGroup = null;
+let liveWS = null, wsReconnectTimer = null;
 
 /* ─── API ─── */
 let sessionExpiredHandled = false;
@@ -432,12 +438,14 @@ function initApp() {
   buildNav();
   goTab('mapa');
   liveTimer = setInterval(liveMove, 5000);
+  connectWS();
 }
 
 function logout() {
   clearInterval(liveTimer);
+  disconnectWS();
   if (map) { try { map.remove(); } catch(e) {} }
-  TOKEN = ''; CU = null; map = null; markers = {}; selV = null; VEHICLES = []; COMPARTILHAMENTOS = [];
+  TOKEN = ''; CU = null; map = null; markers = {}; clusterGroup = null; selV = null; VEHICLES = []; COMPARTILHAMENTOS = [];
   localStorage.removeItem('flx_token');
   document.getElementById('mapPane').innerHTML = '';
   document.getElementById('appScreen').classList.remove('active');
@@ -519,6 +527,7 @@ function renderMapa(c) {
     <div class="map-fabs">
       <div class="fab" onclick="toggleMapSb()">☰</div>
       <div class="fab" onclick="centerAll()">⊙</div>
+      <div class="fab" onclick="goToMyLocation()">📍</div>
     </div>
   </div>`;
   requestAnimationFrame(() => requestAnimationFrame(() => initMap()));
@@ -531,11 +540,11 @@ async function loadVehicles() {
     const vs = await api('GET', '/api/veiculos');
     VEHICLES = vs.map(v => ({
       ...v,
-      status: v.bloqueado ? 'blocked' : (v.imei ? 'offline' : 'offline'),
-      speed: 0, lat: -23.55 + Math.random()*.08, lng: -46.63 + Math.random()*.08,
+      status: v.bloqueado ? 'blocked' : 'offline',
+      speed: 0, lat: null, lng: null,
       ignition: false, updated: 'offline'
     }));
-    if (map) { Object.values(markers).forEach(m => map.removeLayer(m)); markers = {}; VEHICLES.forEach(v => addMkr(v)); }
+    if (map) { if (clusterGroup) clusterGroup.clearLayers(); Object.values(markers).forEach(m => map.removeLayer(m)); markers = {}; VEHICLES.forEach(v => addMkr(v)); }
     try {
       const comps = await api('GET', '/api/compartilhamentos');
       COMPARTILHAMENTOS = comps.map(c => ({ ...c, tipo: 'compartilhamento' }));
@@ -543,6 +552,7 @@ async function loadVehicles() {
     syncMkrs();
     if (map) centerAll();
     updateMapList();
+    liveMove();
   } catch(e) {
     console.error(e);
     const el = document.getElementById('mapList');
@@ -612,6 +622,11 @@ function initMap() {
   if (map) { map.remove(); map = null; }
   map = L.map('map').setView([-23.549,-46.638], 13);
   addTileLayer();
+  clusterGroup = (typeof L.markerClusterGroup === 'function')
+    ? L.markerClusterGroup({ maxClusterRadius: 50, spiderfyOnMaxZoom: true, showCoverageOnHover: false })
+    : L.layerGroup();
+  clusterGroup.addTo(map);
+  markers = {};
   VEHICLES.forEach(v => addMkr(v));
   syncMkrs();
   centerAll();
@@ -661,15 +676,19 @@ function mkIcon(v) {
 }
 
 function addMkr(v) {
-  if (!map) return;
-  const m = L.marker([v.lat,v.lng],{icon:mkIcon(v)}).addTo(map);
-  m.on('click', () => openBS(v.id)); markers[v.id] = m;
+  if (!map || v.lat == null || v.lng == null) return;
+  const m = L.marker([v.lat,v.lng],{icon:mkIcon(v)});
+  m.on('click', () => openBS(v.id));
+  (clusterGroup || map).addLayer(m);
+  markers[v.id] = m;
 }
 
 function syncMkrs() {
   if (!map) return;
   VEHICLES.forEach(v => {
+    if (v.lat == null || v.lng == null) return;
     if (markers[v.id]) { markers[v.id].setLatLng([v.lat,v.lng]); markers[v.id].setIcon(mkIcon(v)); }
+    else { addMkr(v); }
   });
   COMPARTILHAMENTOS.forEach(c => {
     const mkid = 'comp_'+c.id;
@@ -695,6 +714,15 @@ function centerAll() {
   if (!pts.length) return;
   if (pts.length === 1) map.setView(pts[0], 12);
   else map.fitBounds(L.latLngBounds(pts), {padding:[60,60]});
+}
+
+function goToMyLocation() {
+  if (!navigator.geolocation) { toast('Geolocalização não suportada neste dispositivo','err'); return; }
+  navigator.geolocation.getCurrentPosition(
+    pos => { if (map) map.flyTo([pos.coords.latitude, pos.coords.longitude], 15, {duration:.7}); },
+    () => toast('Não foi possível obter sua localização','err'),
+    { enableHighAccuracy: true, timeout: 8000 }
+  );
 }
 
 function clearTrail() { if (trailLine && map) { map.removeLayer(trailLine); trailLine = null; } }
@@ -750,7 +778,7 @@ function showMapList() {
 function openBS(id) {
   const v = VEHICLES.find(x => x.id===id); if (!v) return;
   selV = id; syncMkrs();
-  if (map) map.flyTo([v.lat,v.lng],15,{duration:.7});
+  if (map && v.lat != null && v.lng != null) map.flyTo([v.lat,v.lng],15,{duration:.7});
   const stKey = v.bloqueado?'blocked':v.status;
   const stMap = {moving:{cls:'moving',txt:'▶ Em rota'},stopped:{cls:'stopped',txt:'■ Parado'},offline:{cls:'offline',txt:'● Offline'},blocked:{cls:'blocked',txt:'🔒 Bloqueado'}};
   const blockBtn = v.bloqueado
@@ -822,29 +850,19 @@ async function toggleBlock(id) {
   } catch(e) { toast(e.message,'err'); }
 }
 
-async function liveMove() {
-  try {
-    const posicoes = await api('GET', '/api/posicoes');
-    if (Array.isArray(posicoes) && posicoes.length > 0) {
-      posicoes.forEach(pos => {
-        const v = VEHICLES.find(v => String(v.imei) === String(pos.id));
-        if (v) {
-          v.lat = pos.lat;
-          v.lng = pos.lon;
-          v.speed = pos.velocidade || 0;
-          v.status = pos.velocidade > 5 ? 'moving' : 'online';
-          v.timestamp = pos.timestamp;
-        }
-      });
-    } else {
-      VEHICLES.forEach(v => {
-        if (v.status==='moving' && !v.bloqueado) {
-          v.lat += (Math.random()-.5)*.002; v.lng += (Math.random()-.5)*.002;
-          v.speed = Math.round(Math.max(20,Math.min(90,v.speed+(Math.random()-.5)*10)));
-        }
-      });
-    }
-  } catch(e) {
+function applyPosicoes(posicoes) {
+  if (Array.isArray(posicoes) && posicoes.length > 0) {
+    posicoes.forEach(pos => {
+      const v = VEHICLES.find(v => String(v.imei) === String(pos.id));
+      if (v) {
+        v.lat = pos.lat;
+        v.lng = pos.lon;
+        v.speed = pos.velocidade || 0;
+        v.status = pos.velocidade > 5 ? 'moving' : 'online';
+        v.timestamp = pos.timestamp;
+      }
+    });
+  } else {
     VEHICLES.forEach(v => {
       if (v.status==='moving' && !v.bloqueado) {
         v.lat += (Math.random()-.5)*.002; v.lng += (Math.random()-.5)*.002;
@@ -852,12 +870,54 @@ async function liveMove() {
       }
     });
   }
+  syncMkrs(); updateMapList();
+  if (selV) openBS(selV);
+}
+
+function applyCompartilhamento(c) {
+  const i = COMPARTILHAMENTOS.findIndex(x => x.id === c.id);
+  if (i >= 0) COMPARTILHAMENTOS[i] = { ...COMPARTILHAMENTOS[i], ...c };
+  else COMPARTILHAMENTOS.push({ ...c, tipo: 'compartilhamento' });
+  syncMkrs(); updateMapList();
+}
+
+// Conexão em tempo real: enquanto o WS estiver aberto, ele já empurra as posições;
+// o polling abaixo segue como fallback (e continua atualizando a lista de celulares).
+async function liveMove() {
+  if (!(liveWS && liveWS.readyState === WebSocket.OPEN)) {
+    try {
+      const posicoes = await api('GET', '/api/posicoes');
+      applyPosicoes(posicoes);
+    } catch(e) {
+      applyPosicoes([]);
+    }
+  }
   try {
     const comps = await api('GET', '/api/compartilhamentos');
     COMPARTILHAMENTOS = comps.map(c => ({ ...c, tipo: 'compartilhamento' }));
+    syncMkrs(); updateMapList();
   } catch(e) {}
-  syncMkrs(); updateMapList();
-  if (selV) openBS(selV);
+}
+
+function connectWS() {
+  if (!TOKEN) return;
+  clearTimeout(wsReconnectTimer);
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  liveWS = new WebSocket(`${proto}//${location.host}/ws?token=${encodeURIComponent(TOKEN)}`);
+  liveWS.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'posicoes') applyPosicoes(msg.data);
+      else if (msg.type === 'compartilhamento') msg.data.forEach(applyCompartilhamento);
+    } catch(e) {}
+  };
+  liveWS.onclose = () => { liveWS = null; if (TOKEN) wsReconnectTimer = setTimeout(connectWS, 4000); };
+  liveWS.onerror = () => { try { liveWS.close(); } catch(e) {} };
+}
+
+function disconnectWS() {
+  clearTimeout(wsReconnectTimer);
+  if (liveWS) { try { liveWS.close(); } catch(e) {} liveWS = null; }
 }
 
 /* ─── CLIENTES (admin) ─── */

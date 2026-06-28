@@ -45,3 +45,13 @@ jobs:
             else
               echo "(não foi possível identificar o PID via ss — pode exigir sudo, nada será forçado)"
             fi
+
+            echo "--- listener GT06 em 5023/UDP (ss, somente leitura) ---"
+            (ss -lun 2>/dev/null | grep ':5023 ') || echo "(nada escutando em 5023/udp)"
+
+            echo "--- ufw status (somente leitura) ---"
+            command -v ufw &> /dev/null && ufw status || echo "(ufw não instalado)"
+
+            echo "--- onde está instalado o traccar nativo (somente leitura) ---"
+            ls -la /opt/traccar/conf/traccar.xml 2>/dev/null || echo "(não encontrado em /opt/traccar)"
+            command -v systemctl &> /dev/null && systemctl is-active traccar 2>/dev/null || echo "(sem serviço systemd 'traccar' ou systemctl indisponível)"

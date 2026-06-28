@@ -6,7 +6,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <meta name="theme-color" content="#0C0C0C"/>
-<title>Felogix Track</title>
+<title>Felogix - Painel de Gestão</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 72 72'%3E%3Crect width='72' height='72' fill='%230C0C0C'/%3E%3Cpolygon points='4,4 20,4 68,68 52,68' fill='%23D91A1A'/%3E%3Cpolygon points='52,4 68,4 20,68 4,68' fill='%23D91A1A'/%3E%3Cpolygon points='36,28 44,36 36,44 28,36' fill='%230C0C0C'/%3E%3C/svg%3E"/>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.css"/>
@@ -98,7 +99,9 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
 .leaflet-control-attribution a{color:rgba(255,255,255,.65)!important;}
 .map-sb{position:absolute;top:0;right:0;bottom:0;width:260px;max-width:78vw;background:rgba(12,12,12,.97);border-left:1px solid var(--b1);backdrop-filter:blur(12px);z-index:100;transform:translateX(100%);transition:transform .28s ease;display:flex;flex-direction:column;}
 .map-sb.open{transform:translateX(0);}
-.msb-head{padding:10px 12px;border-bottom:1px solid var(--b1);}
+@media (max-width:680px){.map-sb{width:88vw;max-width:88vw;}}
+.msb-head{padding:10px 12px;border-bottom:1px solid var(--b1);position:relative;}
+.msb-close{position:absolute;top:8px;right:10px;width:26px;height:26px;border-radius:7px;background:var(--s2);border:1px solid var(--b1);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;color:var(--t2);}
 .msb-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px;}
 .msb-s{background:var(--s2);border:1px solid var(--b1);border-radius:7px;padding:6px;text-align:center;}
 .msb-s .v{font-family:'JetBrains Mono',monospace;font-size:16px;font-weight:600;}
@@ -510,10 +513,12 @@ function renderMapa(c) {
     loadVehicles();
     return;
   }
+  mapSbOpen = window.innerWidth > 680;
   c.innerHTML = `<div id="mapWrap" style="width:100%;height:100%;position:relative;">
     <div id="map"></div>
-    <div class="map-sb open" id="mapSb">
+    <div class="map-sb${mapSbOpen ? ' open' : ''}" id="mapSb">
       <div class="msb-head" id="mapSbHead">
+        <div class="msb-close" onclick="toggleMapSb()">✕</div>
         <div class="msb-stats">
           <div class="msb-s online"><div class="v" id="sbOnline">0</div><div class="l">Online</div></div>
           <div class="msb-s moving"><div class="v" id="sbMoving">0</div><div class="l">Em rota</div></div>

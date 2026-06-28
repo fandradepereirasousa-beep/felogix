@@ -1275,8 +1275,9 @@ app.get('/track/:token', async (req, res) => {
           if (!p.latitude || !p.longitude) return;
           const lat = parseFloat(p.latitude), lon = parseFloat(p.longitude);
           const id = 'g' + idx;
-          if (groupMarkers[id]) { groupMarkers[id].setLatLng([lat, lon]); }
-          else { groupMarkers[id] = L.circleMarker([lat, lon], { radius: 7, fillColor: '#9C27B0', color: 'white', weight: 2, opacity: 1, fillOpacity: 0.8 }).addTo(map); }
+          const popupTxt = escHtml(p.nome || 'Sem nome') + '<br>' + fmtLastSeen(p.ultimo_update);
+          if (groupMarkers[id]) { groupMarkers[id].setLatLng([lat, lon]); groupMarkers[id].setPopupContent(popupTxt); }
+          else { groupMarkers[id] = L.circleMarker([lat, lon], { radius: 7, fillColor: '#9C27B0', color: 'white', weight: 2, opacity: 1, fillOpacity: 0.8 }).addTo(map).bindPopup(popupTxt); }
         });
       } catch (e) {}
     }
@@ -1307,6 +1308,11 @@ app.get('/track/:token', async (req, res) => {
       maxZoom: 19
     }).addTo(map);
 
+    setTimeout(() => map.invalidateSize(), 300);
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => map.invalidateSize()).observe(document.querySelector('.container'));
+    }
+
     let marker = null, watching = false, watchId = null;
 
     function updateMap(lat, lon) {
@@ -1319,6 +1325,7 @@ app.get('/track/:token', async (req, res) => {
           opacity: 1,
           fillOpacity: 0.8
         }).addTo(map);
+        marker.bindPopup(escHtml(document.getElementById('nomeTxt').textContent) + ' (você)');
         map.setView([lat, lon], 15);
       } else {
         marker.setLatLng([lat, lon]);

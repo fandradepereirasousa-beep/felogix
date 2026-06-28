@@ -102,6 +102,7 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
 .msb-srch{display:flex;align-items:center;gap:6px;background:var(--s2);border:1px solid var(--b1);border-radius:7px;padding:7px 10px;}
 .msb-srch input{background:transparent;border:none;outline:none;font-size:12px;color:var(--t1);flex:1;font-family:'Inter',sans-serif;}
 .msb-list{flex:1;overflow-y:auto;padding:6px;}
+.msb-detail{flex:1;overflow-y:auto;padding:12px;}
 .msb-sec{font-size:9px;color:var(--t2);text-transform:uppercase;letter-spacing:.6px;font-weight:600;padding:10px 8px 4px;}
 .vmc{padding:8px 10px;border-radius:8px;cursor:pointer;margin-bottom:3px;border:1px solid transparent;transition:all .15s;}
 .vmc:hover{background:var(--s2);}
@@ -460,7 +461,7 @@ function renderMapa(c) {
   c.innerHTML = `<div id="mapWrap" style="width:100%;height:100%;position:relative;">
     <div id="map"></div>
     <div class="map-sb open" id="mapSb">
-      <div class="msb-head">
+      <div class="msb-head" id="mapSbHead">
         <div class="msb-stats">
           <div class="msb-s online"><div class="v" id="sbOnline">0</div><div class="l">Online</div></div>
           <div class="msb-s moving"><div class="v" id="sbMoving">0</div><div class="l">Em rota</div></div>
@@ -469,12 +470,12 @@ function renderMapa(c) {
         <div class="msb-srch"><span style="color:var(--t3)">🔍</span><input placeholder="Placa…" oninput="filterMapList(this.value)"/></div>
       </div>
       <div class="msb-list" id="mapList"><div class="loading"><div class="spinner"></div>Carregando…</div></div>
+      <div class="msb-detail" id="mapDetail" style="display:none"></div>
     </div>
     <div class="map-fabs">
       <div class="fab" onclick="toggleMapSb()">☰</div>
       <div class="fab" onclick="centerAll()">⊙</div>
     </div>
-    <div class="bsheet" id="bsheet"><div class="bsh"></div><div class="bsc" id="bshContent"></div></div>
   </div>`;
   setTimeout(() => initMap(), 80);
   loadVehicles();
@@ -563,6 +564,12 @@ function initMap() {
   VEHICLES.forEach(v => addMkr(v));
   syncMkrs();
   centerAll();
+  setTimeout(() => map && map.invalidateSize(), 300);
+  const wrap = document.getElementById('mapWrap');
+  if (wrap && window.ResizeObserver) {
+    const ro = new ResizeObserver(() => map && map.invalidateSize());
+    ro.observe(wrap);
+  }
 }
 
 function mkIcon(v) {
@@ -614,8 +621,16 @@ function centerAll() {
 
 function clearTrail() { if (trailLine && map) { map.removeLayer(trailLine); trailLine = null; } }
 
+function distKm(lat1,lon1,lat2,lon2) {
+  const R = 6371, dLat=(lat2-lat1)*Math.PI/180, dLon=(lon2-lon1)*Math.PI/180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
 async function loadHistorico(tipo, id) {
   clearTrail();
+  const elKm = document.getElementById('histKm');
+  if (elKm) elKm.textContent = 'Carregando histórico de hoje…';
   try {
     const url = tipo === 'veiculo' ? `/api/veiculos/${id}/historico` : `/api/compartilhamentos/${id}/historico`;
     const pts = await api('GET', url);
@@ -624,23 +639,46 @@ async function loadHistorico(tipo, id) {
       : pts.map(p => [parseFloat(p.latitude), parseFloat(p.longitude)])
     ).filter(c => c[0] && c[1]);
     if (coords.length >= 2 && map) trailLine = L.polyline(coords, {color:'#3b82f6', weight:3, opacity:0.6}).addTo(map);
-  } catch(e) {}
+    const elKm2 = document.getElementById('histKm');
+    if (elKm2) {
+      if (coords.length >= 2) {
+        let km = 0;
+        for (let i=1;i<coords.length;i++) km += distKm(coords[i-1][0],coords[i-1][1],coords[i][0],coords[i][1]);
+        elKm2.textContent = `🛣 ${km.toFixed(1)} km percorridos hoje`;
+      } else {
+        elKm2.textContent = 'Sem deslocamento registrado hoje';
+      }
+    }
+  } catch(e) { if (elKm) elKm.textContent = 'Sem histórico disponível'; }
 }
 
 function toggleMapSb() { mapSbOpen=!mapSbOpen; document.getElementById('mapSb')?.classList.toggle('open',mapSbOpen); }
 
+function showMapDetail(html) {
+  mapSbOpen = true; document.getElementById('mapSb')?.classList.add('open');
+  document.getElementById('mapSbHead').style.display = 'none';
+  document.getElementById('mapList').style.display = 'none';
+  const d = document.getElementById('mapDetail');
+  d.style.display = 'block'; d.innerHTML = html;
+}
+
+function showMapList() {
+  selV = null; syncMkrs(); clearTrail();
+  document.getElementById('mapSbHead').style.display = '';
+  document.getElementById('mapList').style.display = '';
+  document.getElementById('mapDetail').style.display = 'none';
+}
+
 function openBS(id) {
   const v = VEHICLES.find(x => x.id===id); if (!v) return;
   selV = id; syncMkrs();
-  mapSbOpen = false; document.getElementById('mapSb')?.classList.remove('open');
   if (map) map.flyTo([v.lat,v.lng],15,{duration:.7});
-  loadHistorico('veiculo', v.id);
   const stKey = v.bloqueado?'blocked':v.status;
   const stMap = {moving:{cls:'moving',txt:'▶ Em rota'},stopped:{cls:'stopped',txt:'■ Parado'},offline:{cls:'offline',txt:'● Offline'},blocked:{cls:'blocked',txt:'🔒 Bloqueado'}};
   const blockBtn = v.bloqueado
     ? `<div class="vd-btn success full" onclick="toggleBlock(${v.id})">✅ Desbloquear ignição</div>`
     : `<div class="vd-btn danger full" onclick="toggleBlock(${v.id})">🔒 Bloquear ignição</div>`;
-  document.getElementById('bshContent').innerHTML = `
+  showMapDetail(`
     <div class="vd-top">
       ${thumbHtml(v.foto, '🚗', 'lg')}
       <div class="vd-info">
@@ -648,7 +686,7 @@ function openBS(id) {
         <div class="vd-model">${v.modelo||''} ${v.ano||''} · ${v.cor||''}</div>
         <div class="vd-status ${stMap[stKey].cls}">${stMap[stKey].txt}</div>
       </div>
-      <div class="vd-close" onclick="closeBS()">✕</div>
+      <div class="vd-close" onclick="showMapList()">✕</div>
     </div>
     <div class="kpis-grid">
       <div class="kpi-sm"><div class="v" style="color:var(--blue)">${v.speed}</div><div class="l">km/h</div></div>
@@ -656,29 +694,24 @@ function openBS(id) {
       <div class="kpi-sm"><div class="v" style="font-size:10px;color:var(--t2)">${v.updated}</div><div class="l">Sinal</div></div>
     </div>
     <div class="vd-addr">📍 <span style="color:var(--t1)">${fmtLastSeen(v.timestamp)}</span></div>
+    <div class="ev-head">Histórico de hoje</div>
+    <div class="vd-addr" id="histKm">Carregando histórico de hoje…</div>
     <div class="vd-acts">
-      <div class="vd-btn" onclick="closeBS()">✕ Fechar</div>
+      <div class="vd-btn" onclick="showMapList()">← Voltar</div>
       <div class="vd-btn" onclick="goTab('veiculos')">📋 Detalhes</div>
       ${blockBtn}
     </div>
     <div class="ev-head">Eventos</div>
-    <div class="ev-item"><div class="ev-ic">📡</div><div class="ev-txt" style="color:var(--t2)">Aguardando conexão do rastreador EC33</div></div>`;
-  document.getElementById('bsheet').classList.add('open');
-}
-
-function closeBS() {
-  document.getElementById('bsheet').classList.remove('open'); selV=null; syncMkrs(); clearTrail();
-  mapSbOpen = true; document.getElementById('mapSb')?.classList.add('open');
+    <div class="ev-item"><div class="ev-ic">📡</div><div class="ev-txt" style="color:var(--t2)">Aguardando conexão do rastreador EC33</div></div>`);
+  loadHistorico('veiculo', v.id);
 }
 
 function openBSPerson(id) {
   const c = COMPARTILHAMENTOS.find(x => x.id===id); if (!c) return;
-  mapSbOpen = false; document.getElementById('mapSb')?.classList.remove('open');
   if (map && c.latitude && c.longitude) map.flyTo([c.latitude,c.longitude],15,{duration:.7});
-  loadHistorico('pessoa', c.id);
   const online = isPersonOnline(c);
   const link = window.location.origin + '/track/' + c.token;
-  document.getElementById('bshContent').innerHTML = `
+  showMapDetail(`
     <div class="vd-top">
       ${thumbHtml(c.foto, '📱', 'lg')}
       <div class="vd-info">
@@ -686,14 +719,16 @@ function openBSPerson(id) {
         <div class="vd-model">Rastreamento por link</div>
         <div class="vd-status ${online?'moving':'offline'}">${online?'🟢 Ativo agora':'⚪ Offline'}</div>
       </div>
-      <div class="vd-close" onclick="closeBS()">✕</div>
+      <div class="vd-close" onclick="showMapList()">✕</div>
     </div>
     <div class="vd-addr">📍 <span style="color:var(--t1)">${c.latitude?parseFloat(c.latitude).toFixed(4)+', '+parseFloat(c.longitude).toFixed(4):'Aguardando localização…'}</span> · ${fmtLastSeen(c.ultimo_update)}</div>
+    <div class="ev-head">Histórico de hoje</div>
+    <div class="vd-addr" id="histKm">Carregando histórico de hoje…</div>
     <div class="vd-acts">
-      <div class="vd-btn" onclick="closeBS()">✕ Fechar</div>
+      <div class="vd-btn" onclick="showMapList()">← Voltar</div>
       <div class="vd-btn" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>
-    </div>`;
-  document.getElementById('bsheet').classList.add('open');
+    </div>`);
+  loadHistorico('pessoa', c.id);
 }
 
 async function toggleBlock(id) {

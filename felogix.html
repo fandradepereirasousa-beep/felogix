@@ -315,7 +315,7 @@ const API = '';
 let TOKEN = localStorage.getItem('flx_token') || '';
 let CU = null;
 let map = null, markers = {}, selV = null, mapSbOpen = false, currentTab = '';
-let VEHICLES = [], COMPARTILHAMENTOS = [], liveTimer = null;
+let VEHICLES = [], COMPARTILHAMENTOS = [], liveTimer = null, trailLine = null;
 
 /* ─── API ─── */
 async function api(method, path, body) {
@@ -488,21 +488,33 @@ async function loadVehicles() {
       speed: 0, lat: -23.55 + Math.random()*.08, lng: -46.63 + Math.random()*.08,
       ignition: false, updated: 'offline'
     }));
-    if (map) { Object.values(markers).forEach(m => map.removeLayer(m)); markers = {}; VEHICLES.forEach(v => addMkr(v)); centerAll(); }
+    if (map) { Object.values(markers).forEach(m => map.removeLayer(m)); markers = {}; VEHICLES.forEach(v => addMkr(v)); }
     try {
       const comps = await api('GET', '/api/compartilhamentos');
       COMPARTILHAMENTOS = comps.map(c => ({ ...c, tipo: 'compartilhamento' }));
     } catch(e) {}
     syncMkrs();
+    if (map) centerAll();
     updateMapList();
   } catch(e) { console.error(e); }
+}
+
+function isPersonOnline(c) { return !!(c.ultimo_update && new Date(c.ultimo_update) > new Date(Date.now()-90000)); }
+
+function fmtLastSeen(ts) {
+  if (!ts) return 'Sem sinal ainda';
+  const d = new Date(ts);
+  if (Date.now() - d.getTime() < 90000) return '🟢 Online agora';
+  const hhmm = String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  const hoje = d.toDateString() === new Date().toDateString();
+  return hoje ? `Visto às ${hhmm}` : `Visto em ${d.toLocaleDateString('pt-BR')} ${hhmm}`;
 }
 
 function updateMapList() {
   const el = document.getElementById('mapList'); if (!el) return;
   const allItems = VEHICLES.length + COMPARTILHAMENTOS.length;
-  if (!allItems) { el.innerHTML = `<div class="empty"><div class="ei">🚗</div><div class="et">Nenhum veículo</div><div class="es">Cadastre veículos na aba Veículos</div></div>`; return; }
-  document.getElementById('sbOnline').textContent  = VEHICLES.filter(v => v.status !== 'offline').length;
+  if (!allItems) { el.innerHTML = `<div class="empty"><div class="ei">🚗</div><div class="et">Nada para rastrear ainda</div><div class="es">Veículos e pessoas aparecerão aqui quando cadastrados</div></div>`; return; }
+  document.getElementById('sbOnline').textContent  = VEHICLES.filter(v => v.status !== 'offline').length + COMPARTILHAMENTOS.filter(isPersonOnline).length;
   document.getElementById('sbMoving').textContent  = VEHICLES.filter(v => v.status === 'moving').length;
   document.getElementById('sbStopped').textContent = VEHICLES.filter(v => v.status === 'stopped').length;
   const vehiclesHtml = VEHICLES.map(v => {
@@ -511,24 +523,31 @@ function updateMapList() {
       <div class="vmc-r1"><div class="sdot ${dotC}"></div><div class="vmc-plate">${v.placa}</div>
       <div style="flex:1;font-size:10px;color:var(--t2)">${(v.modelo||'').split(' ')[0]}</div>
       <div style="font-size:10px;color:var(--t2)">${v.speed>0?v.speed+' km/h':'—'}</div></div>
+      <div style="font-size:9px;color:var(--t3);padding-left:18px">${fmtLastSeen(v.timestamp)}</div>
     </div>`;
   }).join('');
   const compsHtml = COMPARTILHAMENTOS.map(c => {
-    const dotC = c.ultimo_update && new Date(c.ultimo_update) > new Date(Date.now()-60000) ? 'moving' : 'offline';
+    const online = isPersonOnline(c);
+    const dotC = online ? 'moving' : 'offline';
     const loc = c.latitude && c.longitude ? `${parseFloat(c.latitude).toFixed(4)} ${parseFloat(c.longitude).toFixed(4)}` : 'Aguardando localização…';
     return `<div class="vmc" style="background:rgba(255,152,0,.1)" onclick="openBSPerson(${c.id})">
       <div class="vmc-r1"><div class="sdot ${dotC}"></div><div style="flex:1"><div class="vmc-plate" style="font-size:11px">📱 ${c.nome}</div><div style="font-size:9px;color:var(--t2)">${loc}</div></div></div>
+      <div style="font-size:9px;color:var(--t3);padding-left:18px">${fmtLastSeen(c.ultimo_update)}</div>
     </div>`;
   }).join('');
   el.innerHTML = vehiclesHtml + compsHtml;
 }
 
 function filterMapList(q) {
-  const vs = q ? VEHICLES.filter(v => (v.placa+v.modelo).toLowerCase().includes(q.toLowerCase())) : VEHICLES;
+  const lc = q.toLowerCase();
+  const vs = q ? VEHICLES.filter(v => (v.placa+v.modelo).toLowerCase().includes(lc)) : VEHICLES;
+  const cs = q ? COMPARTILHAMENTOS.filter(c => (c.nome||'').toLowerCase().includes(lc)) : COMPARTILHAMENTOS;
   const el = document.getElementById('mapList'); if (!el) return;
   el.innerHTML = vs.map(v => `<div class="vmc" onclick="openBS(${v.id})">
     <div class="vmc-r1"><div class="sdot ${v.bloqueado?'blocked':v.status}"></div>
-    <div class="vmc-plate">${v.placa}</div></div></div>`).join('');
+    <div class="vmc-plate">${v.placa}</div></div></div>`).join('')
+    + cs.map(c => `<div class="vmc" style="background:rgba(255,152,0,.1)" onclick="openBSPerson(${c.id})">
+    <div class="vmc-r1"><div class="sdot ${isPersonOnline(c)?'moving':'offline'}"></div><div class="vmc-plate" style="font-size:11px">📱 ${c.nome}</div></div></div>`).join('');
 }
 
 function initMap() {
@@ -536,7 +555,8 @@ function initMap() {
   map = L.map('map', {zoomControl:false}).setView([-23.549,-46.638], 13);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19}).addTo(map);
   VEHICLES.forEach(v => addMkr(v));
-  if (VEHICLES.length) centerAll();
+  syncMkrs();
+  centerAll();
 }
 
 function mkIcon(v) {
@@ -576,8 +596,29 @@ function syncMkrs() {
 }
 
 function centerAll() {
-  const vs = VEHICLES.filter(v => v.lat && v.lng);
-  if (vs.length && map) map.fitBounds(L.latLngBounds(vs.map(v=>[v.lat,v.lng])), {padding:[60,60]});
+  if (!map) return;
+  const pts = [
+    ...VEHICLES.filter(v => v.lat && v.lng).map(v => [v.lat, v.lng]),
+    ...COMPARTILHAMENTOS.filter(c => c.latitude && c.longitude).map(c => [parseFloat(c.latitude), parseFloat(c.longitude)])
+  ];
+  if (!pts.length) return;
+  if (pts.length === 1) map.setView(pts[0], 12);
+  else map.fitBounds(L.latLngBounds(pts), {padding:[60,60]});
+}
+
+function clearTrail() { if (trailLine && map) { map.removeLayer(trailLine); trailLine = null; } }
+
+async function loadHistorico(tipo, id) {
+  clearTrail();
+  try {
+    const url = tipo === 'veiculo' ? `/api/veiculos/${id}/historico` : `/api/compartilhamentos/${id}/historico`;
+    const pts = await api('GET', url);
+    const coords = (tipo === 'veiculo'
+      ? pts.map(p => [p.lat, p.lng])
+      : pts.map(p => [parseFloat(p.latitude), parseFloat(p.longitude)])
+    ).filter(c => c[0] && c[1]);
+    if (coords.length >= 2 && map) trailLine = L.polyline(coords, {color:'#3b82f6', weight:3, opacity:0.6}).addTo(map);
+  } catch(e) {}
 }
 
 function toggleMapSb() { mapSbOpen=!mapSbOpen; document.getElementById('mapSb')?.classList.toggle('open',mapSbOpen); }
@@ -586,6 +627,7 @@ function openBS(id) {
   const v = VEHICLES.find(x => x.id===id); if (!v) return;
   selV = id; syncMkrs();
   if (map) map.flyTo([v.lat,v.lng],15,{duration:.7});
+  loadHistorico('veiculo', v.id);
   const stKey = v.bloqueado?'blocked':v.status;
   const stMap = {moving:{cls:'moving',txt:'▶ Em rota'},stopped:{cls:'stopped',txt:'■ Parado'},offline:{cls:'offline',txt:'● Offline'},blocked:{cls:'blocked',txt:'🔒 Bloqueado'}};
   const blockBtn = v.bloqueado
@@ -606,7 +648,7 @@ function openBS(id) {
       <div class="kpi-sm"><div class="v">${v.ignition?'🟢':'🔴'}</div><div class="l">Ignição</div></div>
       <div class="kpi-sm"><div class="v" style="font-size:10px;color:var(--t2)">${v.updated}</div><div class="l">Sinal</div></div>
     </div>
-    <div class="vd-addr">📍 <span style="color:var(--t1)">Aguardando rastreador…</span></div>
+    <div class="vd-addr">📍 <span style="color:var(--t1)">${fmtLastSeen(v.timestamp)}</span></div>
     <div class="vd-acts">
       <div class="vd-btn" onclick="closeBS()">✕ Fechar</div>
       <div class="vd-btn" onclick="goTab('veiculos')">📋 Detalhes</div>
@@ -617,12 +659,13 @@ function openBS(id) {
   document.getElementById('bsheet').classList.add('open');
 }
 
-function closeBS() { document.getElementById('bsheet').classList.remove('open'); selV=null; syncMkrs(); }
+function closeBS() { document.getElementById('bsheet').classList.remove('open'); selV=null; syncMkrs(); clearTrail(); }
 
 function openBSPerson(id) {
   const c = COMPARTILHAMENTOS.find(x => x.id===id); if (!c) return;
   if (map && c.latitude && c.longitude) map.flyTo([c.latitude,c.longitude],15,{duration:.7});
-  const online = c.ultimo_update && new Date(c.ultimo_update) > new Date(Date.now()-60000);
+  loadHistorico('pessoa', c.id);
+  const online = isPersonOnline(c);
   const link = window.location.origin + '/track/' + c.token;
   document.getElementById('bshContent').innerHTML = `
     <div class="vd-top">
@@ -634,7 +677,7 @@ function openBSPerson(id) {
       </div>
       <div class="vd-close" onclick="closeBS()">✕</div>
     </div>
-    <div class="vd-addr">📍 <span style="color:var(--t1)">${c.latitude?parseFloat(c.latitude).toFixed(4)+', '+parseFloat(c.longitude).toFixed(4):'Aguardando localização…'}</span></div>
+    <div class="vd-addr">📍 <span style="color:var(--t1)">${c.latitude?parseFloat(c.latitude).toFixed(4)+', '+parseFloat(c.longitude).toFixed(4):'Aguardando localização…'}</span> · ${fmtLastSeen(c.ultimo_update)}</div>
     <div class="vd-acts">
       <div class="vd-btn" onclick="closeBS()">✕ Fechar</div>
       <div class="vd-btn" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>

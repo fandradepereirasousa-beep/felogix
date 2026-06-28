@@ -149,7 +149,8 @@ async function traccarAPI(method, path, body = null) {
       method: method,
       headers: {
         'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
       },
       timeout: 5000
     };
@@ -468,6 +469,15 @@ async function initDB() {
       ultimo_update TIMESTAMP,
       criado_em TIMESTAMP DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS posicoes_historico (
+      id SERIAL PRIMARY KEY,
+      compartilhamento_id INTEGER REFERENCES rastreadores_compartilhados(id) ON DELETE CASCADE,
+      latitude DECIMAL(10,8),
+      longitude DECIMAL(11,8),
+      velocidade DECIMAL(10,2),
+      criado_em TIMESTAMP DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_posicoes_historico_comp ON posicoes_historico (compartilhamento_id, criado_em DESC);
   `);
   // Migração: garante a restrição única em pagamentos (tabelas antigas podem não ter,
   // pois CREATE TABLE IF NOT EXISTS não altera tabelas já existentes). Sem isso o
@@ -788,7 +798,24 @@ app.get('/api/posicoes', auth, async (req, res) => {
       });
     }
   }
-  res.json(result);
+  res.json(req.user.role === 'admin' ? result : result.filter(r => r.cliente_id === req.user.id));
+});
+
+app.get('/api/veiculos/:id/historico', auth, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const v = await pool.query('SELECT cliente_id, imei FROM veiculos WHERE id=$1', [id]);
+  if (!v.rows.length) return res.status(404).json({ erro: 'Veículo não encontrado' });
+  if (req.user.role !== 'admin' && v.rows[0].cliente_id !== req.user.id)
+    return res.status(403).json({ erro: 'Sem permissão para este veículo' });
+  if (!v.rows[0].imei) return res.json([]);
+  try {
+    const to = new Date();
+    const from = new Date(Date.now() - 24*60*60*1000);
+    const result = await traccarAPI('GET', `/api/reports/route?deviceId=${encodeURIComponent(v.rows[0].imei)}&from=${from.toISOString()}&to=${to.toISOString()}`);
+    if (result.status !== 200 || !Array.isArray(result.data)) return res.json([]);
+    res.json(result.data.map(p => ({ lat: p.latitude, lng: p.longitude, velocidade: Math.round(p.speed||0), timestamp: p.fixTime || p.serverTime })));
+  } catch (e) { res.json([]); }
 });
 
 app.post('/api/traccar/sync', auth, adminOnly, async (req, res) => {
@@ -820,11 +847,20 @@ app.post('/api/compartilhamentos', auth, adminOnly, async (req, res) => {
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
-app.get('/api/compartilhamentos', auth, adminOnly, async (req, res) => {
-  const r = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE ativo=true ORDER BY criado_em DESC');
+app.get('/api/compartilhamentos', auth, async (req, res) => {
+  let q, p;
+  if (req.user.role === 'admin') {
+    q = 'SELECT * FROM rastreadores_compartilhados WHERE ativo=true ORDER BY criado_em DESC';
+    p = [];
+  } else {
+    q = 'SELECT * FROM rastreadores_compartilhados WHERE ativo=true AND cliente_id=$1 ORDER BY criado_em DESC';
+    p = [req.user.id];
+  }
+  const r = await pool.query(q, p);
   res.json(r.rows);
 });
 
+const ultimoHistorico = new Map(); // compartilhamento_id -> timestamp do último ponto salvo (throttle)
 app.post('/api/compartilhamentos/:token/location', async (req, res) => {
   const { latitude, longitude, precisao, velocidade, direcao } = req.body;
   if (!latitude || !longitude) return res.status(400).json({ erro: 'Localização inválida' });
@@ -834,6 +870,15 @@ app.post('/api/compartilhamentos/:token/location', async (req, res) => {
       [parseFloat(latitude), parseFloat(longitude), parseFloat(precisao)||0, parseFloat(velocidade)||0, parseFloat(direcao)||0, req.params.token]
     );
     if (!r.rows.length) return res.status(404).json({ erro: 'Token não encontrado' });
+    const id = r.rows[0].id;
+    const agora = Date.now();
+    if (!ultimoHistorico.has(id) || agora - ultimoHistorico.get(id) >= 30000) {
+      ultimoHistorico.set(id, agora);
+      pool.query(
+        'INSERT INTO posicoes_historico (compartilhamento_id, latitude, longitude, velocidade) VALUES ($1,$2,$3,$4)',
+        [id, parseFloat(latitude), parseFloat(longitude), parseFloat(velocidade)||0]
+      ).catch(() => {});
+    }
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
@@ -845,15 +890,36 @@ app.delete('/api/compartilhamentos/:id', auth, adminOnly, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/compartilhamentos/:id/historico', auth, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const c = await pool.query('SELECT cliente_id FROM rastreadores_compartilhados WHERE id=$1', [id]);
+  if (!c.rows.length) return res.status(404).json({ erro: 'Não encontrado' });
+  if (req.user.role !== 'admin' && c.rows[0].cliente_id !== req.user.id)
+    return res.status(403).json({ erro: 'Sem permissão' });
+  const r = await pool.query(
+    'SELECT latitude, longitude, velocidade, criado_em FROM posicoes_historico WHERE compartilhamento_id=$1 ORDER BY criado_em DESC LIMIT 200',
+    [id]
+  );
+  res.json(r.rows.reverse());
+});
+
 /* ─── GRUPOS DE RASTREAMENTO (Pessoas/Família/Equipes) ─── */
-app.get('/api/grupos', auth, adminOnly, async (req, res) => {
-  const r = await pool.query(`
+app.get('/api/grupos', auth, async (req, res) => {
+  const base = `
     SELECT g.*, c.nome AS cliente_nome,
       (SELECT COUNT(*) FROM rastreadores_compartilhados WHERE grupo_id=g.id AND ativo=true) AS qtd_pessoas
     FROM grupos_rastreamento g
-    JOIN clientes c ON g.cliente_id = c.id
-    ORDER BY g.criado_em DESC
-  `);
+    JOIN clientes c ON g.cliente_id = c.id`;
+  let q, p;
+  if (req.user.role === 'admin') {
+    q = `${base} ORDER BY g.criado_em DESC`;
+    p = [];
+  } else {
+    q = `${base} WHERE g.cliente_id=$1 ORDER BY g.criado_em DESC`;
+    p = [req.user.id];
+  }
+  const r = await pool.query(q, p);
   res.json(r.rows);
 });
 
@@ -878,9 +944,14 @@ app.delete('/api/grupos/:id', auth, adminOnly, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/grupos/:id/pessoas', auth, adminOnly, async (req, res) => {
+app.get('/api/grupos/:id/pessoas', auth, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  if (req.user.role !== 'admin') {
+    const grupo = await pool.query('SELECT cliente_id FROM grupos_rastreamento WHERE id=$1', [id]);
+    if (!grupo.rows.length || grupo.rows[0].cliente_id !== req.user.id)
+      return res.status(403).json({ erro: 'Sem permissão para este grupo' });
+  }
   const r = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE grupo_id=$1 AND ativo=true ORDER BY criado_em DESC', [id]);
   res.json(r.rows);
 });

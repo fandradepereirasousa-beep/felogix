@@ -1,8 +1,12 @@
 name: Configurar Traccar no VPS
 
-# Disparo manual — usar uma única vez para instalar/garantir o Traccar de pé
-# antes da chegada dos rastreadores. Pode ser rodado de novo com segurança
-# (idempotente): se o Traccar já estiver instalado, só confirma que está rodando.
+# Disparo manual — o Traccar já está instalado nativamente no VPS (fora de
+# Docker, como serviço systemd "traccar", confirmado via diagnóstico). O que
+# faltava era o listener GT06 (5023/udp): o traccar.xml não tinha a porta do
+# protocolo configurada. Este workflow só completa o que falta — nunca
+# reinstala nem substitui o que já está rodando. Idempotente: pode rodar de
+# novo a qualquer momento sem risco (se o gt06.port já existir, não toca em
+# nada).
 on:
   workflow_dispatch:
 
@@ -10,7 +14,7 @@ jobs:
   setup-traccar:
     runs-on: ubuntu-latest
     steps:
-      - name: Instalar Docker (se necessário) e subir o Traccar
+      - name: Habilitar listener GT06 (5023/udp) se ainda não estiver configurado
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -20,38 +24,40 @@ jobs:
           script_stop: true
           script: |
             set -e
+            CONF=/opt/traccar/conf/traccar.xml
 
-            if ! command -v docker &> /dev/null; then
-              echo "Docker não encontrado, instalando..."
-              curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-              sh /tmp/get-docker.sh
+            if [ ! -f "$CONF" ]; then
+              echo "Não encontrei $CONF — este workflow assume Traccar já instalado nativamente no VPS. Abortando sem alterar nada."
+              exit 1
+            fi
+
+            if grep -q "key='gt06.port'" "$CONF" || grep -q 'key="gt06.port"' "$CONF"; then
+              echo "Listener GT06 já configurado em traccar.xml — nada a fazer."
             else
-              echo "Docker já instalado."
+              BACKUP="$CONF.bak.$(date +%s)"
+              cp "$CONF" "$BACKUP"
+              echo "Backup salvo em $BACKUP antes de qualquer alteração."
+
+              sed -i "s#</properties>#    <entry key='gt06.port'>5023</entry>\n</properties>#" "$CONF"
+              echo "Entrada gt06.port=5023 adicionada em traccar.xml."
+
+              echo "Reiniciando só o serviço traccar (systemd) para aplicar..."
+              systemctl restart traccar
+              echo "Aguardando o Traccar voltar..."
+              sleep 10
+
+              if ! systemctl is-active --quiet traccar || [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8082/api/server)" != "200" ]; then
+                echo "Algo deu errado após a alteração — restaurando o traccar.xml original e reiniciando de novo."
+                cp "$BACKUP" "$CONF"
+                systemctl restart traccar
+                sleep 10
+                echo "Revertido para o estado anterior. Backup preservado em $BACKUP para referência."
+                exit 1
+              fi
             fi
 
-            if ! command -v jq &> /dev/null; then
-              apt-get update -y && apt-get install -y jq
-            fi
-
-            if [ -z "$(docker ps -aq -f name=^traccar$)" ]; then
-              echo "Criando container traccar (painel admin só em localhost:8082, GT06 público em 5023/udp)..."
-              docker run -d \
-                --name traccar \
-                --restart unless-stopped \
-                -p 127.0.0.1:8082:8082 \
-                -p 5023:5023/udp \
-                -v traccar-data:/opt/traccar/data \
-                traccar/traccar:latest
-              echo "Aguardando o Traccar inicializar..."
-              sleep 20
-            else
-              echo "Container traccar já existe, garantindo que está rodando..."
-              docker start traccar || true
-              sleep 3
-            fi
-
-            echo "--- status do container ---"
-            docker ps -f name=traccar
+            echo "--- status do serviço traccar ---"
+            systemctl is-active traccar
 
       - name: Abrir porta 5023/UDP no firewall (se ufw estiver ativo)
         uses: appleboy/ssh-action@v1.2.0
@@ -64,7 +70,7 @@ jobs:
           script: |
             if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
               ufw allow 5023/udp
-              echo "Regra adicionada. Status atual:"
+              echo "Regra garantida. Status atual:"
               ufw status | grep -E "5023|Status"
             else
               echo "ufw inativo ou não instalado neste VPS — nada a fazer aqui."
@@ -87,6 +93,8 @@ jobs:
               V=$(grep -E '^TRACCAR_PASS=' "$ENV_FILE" | cut -d= -f2-)
               [ -n "$V" ] && EXPECTED_PASS="$V"
             fi
+
+            command -v jq &> /dev/null || (apt-get update -y && apt-get install -y jq)
 
             for i in $(seq 1 15); do
               CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8082/api/server)
@@ -128,6 +136,6 @@ jobs:
               exit 0
             else
               echo "✗ Algo não ficou como esperado"
-              docker logs --tail 50 traccar
+              systemctl status traccar --no-pager -l | tail -n 30
               exit 1
             fi

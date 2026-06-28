@@ -658,7 +658,7 @@ app.get('/api/verify-token', auth, async (req, res) => {
     return res.json({ token: '', role: 'admin', nome: 'Felipe Andrade', initials: 'FA' });
   }
   try {
-    const r = await pool.query('SELECT nome, empresa, plano FROM clientes WHERE id=$1 AND ativo=true', [req.user.id]);
+    const r = await pool.query('SELECT nome, plano FROM clientes WHERE id=$1 AND ativo=true', [req.user.id]);
     if (!r.rows.length) return res.status(401).json({ erro: 'Usuário inativo' });
     const c = r.rows[0];
     const initials = c.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
@@ -1075,13 +1075,23 @@ app.put('/api/track/:token/perfil', uploadFoto, async (req, res) => {
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
-/* ─── GRUPO: outras pessoas do mesmo grupo (visível na página pública do link) ─── */
+/* ─── GRUPO: outras pessoas do mesmo grupo (visível só pra quem entrou com senha verificada) ─── */
 app.get('/api/track/:token/grupo', async (req, res) => {
   try {
-    const own = await pool.query('SELECT grupo_id FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    const own = await pool.query('SELECT grupo_id, senha_hash FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
     if (!own.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
-    const grupoId = own.rows[0].grupo_id;
+    const { grupo_id: grupoId, senha_hash } = own.rows[0];
     if (!grupoId) return res.json([]);
+    if (senha_hash) {
+      let autorizado = false;
+      const cookieTok = getCookie(req, 'trk_auth');
+      if (cookieTok) {
+        try { autorizado = jwt.verify(cookieTok, JWT_SECRET).tk === req.params.token; } catch {}
+      }
+      if (!autorizado) return res.json([]);
+    } else {
+      return res.json([]);
+    }
     const r = await pool.query(
       `SELECT nome, foto, latitude, longitude, ultimo_update FROM rastreadores_compartilhados
        WHERE grupo_id=$1 AND ativo=true AND token<>$2 ORDER BY nome`,
@@ -1297,10 +1307,12 @@ app.post('/api/track/:token/login', rateLimit(10, 60000), async (req, res) => {
     if (r.rows[0].senha_hash && !verificarSenha(senha, r.rows[0].senha_hash))
       return res.status(401).json({ erro: 'Senha incorreta' });
     const sessao = jwt.sign({ tk: req.params.token }, JWT_SECRET, { expiresIn: '180d' });
-    res.cookie('trk_auth', sessao, {
+    const cookieOpts = {
       httpOnly: true, sameSite: 'lax', secure: req.protocol === 'https',
-      maxAge: 1000 * 60 * 60 * 24 * 180, path: '/track/' + req.params.token
-    });
+      maxAge: 1000 * 60 * 60 * 24 * 180
+    };
+    res.cookie('trk_auth', sessao, { ...cookieOpts, path: '/track/' + req.params.token });
+    res.cookie('trk_auth', sessao, { ...cookieOpts, path: '/api/track/' + req.params.token });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });

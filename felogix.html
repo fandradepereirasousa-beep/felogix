@@ -320,11 +320,21 @@ let map = null, markers = {}, selV = null, mapSbOpen = true, currentTab = '';
 let VEHICLES = [], COMPARTILHAMENTOS = [], liveTimer = null, trailLine = null;
 
 /* ─── API ─── */
+let sessionExpiredHandled = false;
+function sessionExpired() {
+  if (sessionExpiredHandled) return;
+  sessionExpiredHandled = true;
+  logout();
+  toast('Sessão expirada. Faça login novamente.', 'err');
+}
+
 async function api(method, path, body) {
   const opts = { method, headers: { 'Content-Type':'application/json' } };
+  const autenticada = !!TOKEN;
   if (TOKEN) opts.headers['Authorization'] = 'Bearer ' + TOKEN;
   if (body)  opts.body = JSON.stringify(body);
   const r = await fetch(API + path, opts);
+  if (r.status === 401 && autenticada) { sessionExpired(); throw new Error('Sessão expirada. Faça login novamente.'); }
   const d = await r.json();
   if (!r.ok) throw new Error(d.erro || 'Erro');
   return d;
@@ -333,8 +343,10 @@ async function api(method, path, body) {
 // Igual a api(), mas envia FormData (upload de foto) em vez de JSON
 async function apiUpload(method, path, formData) {
   const opts = { method, body: formData, headers: {} };
+  const autenticada = !!TOKEN;
   if (TOKEN) opts.headers['Authorization'] = 'Bearer ' + TOKEN;
   const r = await fetch(API + path, opts);
+  if (r.status === 401 && autenticada) { sessionExpired(); throw new Error('Sessão expirada. Faça login novamente.'); }
   const d = await r.json();
   if (!r.ok) throw new Error(d.erro || 'Erro');
   return d;
@@ -357,6 +369,7 @@ async function doLogin() {
     TOKEN = d.token;
     localStorage.setItem('flx_token', TOKEN);
     CU = d;
+    sessionExpiredHandled = false;
     initApp();
   } catch(e) {
     document.getElementById('lerr').textContent = e.message;
@@ -430,6 +443,7 @@ function buildNav() {
   const gestorTabs = [
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
     {ic:'🚗',lbl:'Veículos',id:'veiculos'},
+    {ic:'👨‍👩‍👧',lbl:'Pessoas',id:'compartilhamentos'},
     {ic:'🔔',lbl:'Alertas',id:'alertas'},
   ];
   const tabs = CU.role === 'admin' ? adminTabs : gestorTabs;
@@ -498,7 +512,12 @@ async function loadVehicles() {
     syncMkrs();
     if (map) centerAll();
     updateMapList();
-  } catch(e) { console.error(e); }
+  } catch(e) {
+    console.error(e);
+    const el = document.getElementById('mapList');
+    if (el) el.innerHTML = `<div class="empty"><div class="ei">⚠️</div><div class="et">Erro ao carregar</div><div class="es">${e.message||'Tente de novo'}</div></div>
+      <div style="padding:0 12px 12px"><button class="mbtn" onclick="loadVehicles()">🔄 Tentar novamente</button></div>`;
+  }
 }
 
 function isPersonOnline(c) { return !!(c.ultimo_update && new Date(c.ultimo_update) > new Date(Date.now()-90000)); }
@@ -715,8 +734,8 @@ function openBSPerson(id) {
     <div class="vd-top">
       ${thumbHtml(c.foto, '📱', 'lg')}
       <div class="vd-info">
-        <div class="vd-plate">${c.nome}</div>
-        <div class="vd-model">Rastreamento por link</div>
+        <div class="vd-plate">${c.nome} ${c.protegido?'🔒':''}</div>
+        <div class="vd-model">${c.telefone||'Rastreamento por link'}</div>
         <div class="vd-status ${online?'moving':'offline'}">${online?'🟢 Ativo agora':'⚪ Offline'}</div>
       </div>
       <div class="vd-close" onclick="showMapList()">✕</div>
@@ -727,6 +746,7 @@ function openBSPerson(id) {
     <div class="vd-acts">
       <div class="vd-btn" onclick="showMapList()">← Voltar</div>
       <div class="vd-btn" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>
+      <div class="vd-btn" onclick="${c.protegido?`removerSenhaPessoa(${c.id},'${c.nome.replace(/'/g,"\\'")}')`:`gerarSenhaPessoa(${c.id},'${c.nome.replace(/'/g,"\\'")}')`}">${c.protegido?'🔓 Senha':'🔑 Senha'}</div>
     </div>`);
   loadHistorico('pessoa', c.id);
 }
@@ -1260,13 +1280,15 @@ async function renderCompartilhamentos(c) {
             <div class="card-top">
               ${thumbHtml(comp.foto, '📱', 'sm')}
               <div class="card-info">
-                <div class="card-title">${comp.nome}</div>
+                <div class="card-title">${comp.nome} ${comp.protegido?'<span style="font-size:11px">🔒</span>':''}</div>
+                ${comp.telefone?`<div class="card-sub">${comp.telefone}</div>`:''}
                 <div class="card-sub" style="font-family:'JetBrains Mono',monospace;font-size:11px;word-break:break-all">${link}</div>
               </div>
               <span class="badge ${online?'badge-green':'badge-offline'}">${online?'🟢 Ativo agora':'⚪ Inativo'}</span>
             </div>
             <div class="acts-row">
               <div class="act-btn blue" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>
+              <div class="act-btn" onclick="${comp.protegido?`removerSenhaPessoa(${comp.id},'${comp.nome.replace(/'/g,"\\'")}')`:`gerarSenhaPessoa(${comp.id},'${comp.nome.replace(/'/g,"\\'")}')`}">${comp.protegido?'🔓 Remover senha':'🔑 Gerar senha'}</div>
               <div class="act-btn red" onclick="if(confirm('Remover este link?'))deleteCompartilhamento(${comp.id})">🗑 Remover</div>
             </div>
           </div>`;
@@ -1291,13 +1313,15 @@ async function togglePessoas(grupoId) {
           <div class="card-top">
             ${thumbHtml(p.foto, '🙂', 'sm')}
             <div class="card-info">
-              <div class="card-title" style="font-size:13px">${p.nome}</div>
+              <div class="card-title" style="font-size:13px">${p.nome} ${p.protegido?'<span style="font-size:11px">🔒</span>':''}</div>
+              ${p.telefone?`<div class="card-sub" style="font-size:10px">${p.telefone}</div>`:''}
               <div class="card-sub" style="font-family:'JetBrains Mono',monospace;font-size:10px;word-break:break-all">${link}</div>
             </div>
             <span class="badge ${online?'badge-green':'badge-offline'}">${online?'🟢':'⚪'}</span>
           </div>
           <div class="acts-row">
             <div class="act-btn blue" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>
+            <div class="act-btn" onclick="${p.protegido?`removerSenhaPessoa(${p.id},'${p.nome.replace(/'/g,"\\'")}')`:`gerarSenhaPessoa(${p.id},'${p.nome.replace(/'/g,"\\'")}')`}">${p.protegido?'🔓 Remover senha':'🔑 Gerar senha'}</div>
             <div class="act-btn red" onclick="if(confirm('Remover ${p.nome}?'))removerPessoa(${grupoId},${p.id})">🗑 Remover</div>
           </div>
         </div>`;
@@ -1314,16 +1338,17 @@ async function removerPessoa(grupoId, pessoaId) {
 }
 
 async function openAddGrupo() {
+  const isAdmin = CU.role === 'admin';
   let clientes = [];
-  try { clientes = await api('GET','/api/clientes'); } catch(e){}
+  if (isAdmin) { try { clientes = await api('GET','/api/clientes'); } catch(e){} }
   document.getElementById('mTitle').textContent = 'Novo Grupo de Pessoas';
   document.getElementById('mBody').innerHTML = `
-    <div class="mf"><label>Nome do Grupo</label><input id="grupoNome" placeholder="Ex: Família Andrade, Impacto Segurança"/></div>
-    <div class="mf"><label>Cliente</label>
+    <div class="mf"><label>Nome do Grupo</label><input id="grupoNome" placeholder="Ex: Família Andrade, Trabalho"/></div>
+    ${isAdmin ? `<div class="mf"><label>Cliente</label>
       <select id="grupoCliente">
         ${clientes.map(cl=>`<option value="${cl.id}">${cl.nome}</option>`).join('')}
       </select>
-    </div>
+    </div>` : ''}
     <div style="font-size:12px;color:var(--t2);margin:12px 0;padding:12px;background:var(--s2);border-radius:8px">
       👨‍👩‍👧 Depois de criar o grupo, adicione cada pessoa (ou celular) e cada uma recebe seu próprio link de rastreamento.
     </div>
@@ -1333,10 +1358,12 @@ async function openAddGrupo() {
 
 async function saveGrupo() {
   const nome = document.getElementById('grupoNome').value.trim();
-  const cliente_id = parseInt(document.getElementById('grupoCliente').value);
+  const selCliente = document.getElementById('grupoCliente');
   if (!nome) return toast('Nome é obrigatório','err');
   try {
-    await api('POST','/api/grupos',{nome,cliente_id});
+    const payload = { nome };
+    if (selCliente) payload.cliente_id = parseInt(selCliente.value);
+    await api('POST','/api/grupos',payload);
     closeModal(); toast(`Grupo "${nome}" criado ✅`,'ok');
     renderCompartilhamentos(document.getElementById('mainContent'));
   } catch(e) { toast(e.message,'err'); }
@@ -1354,6 +1381,7 @@ function openAddPessoa(grupoId) {
   document.getElementById('mTitle').textContent = 'Adicionar Pessoa ao Grupo';
   document.getElementById('mBody').innerHTML = `
     <div class="mf"><label>Nome da Pessoa</label><input id="pessoaNome" placeholder="Ex: João, ou deixe em branco para a pessoa escolher"/></div>
+    <div class="mf"><label>Telefone (opcional)</label><input id="pessoaTelefone" placeholder="Ex: (11) 99999-9999"/></div>
     <div class="mf"><label>Foto (opcional)</label><input id="pessoaFoto" type="file" accept="image/jpeg,image/png,image/webp"/></div>
     <div style="font-size:12px;color:var(--t2);margin:12px 0;padding:12px;background:var(--s2);border-radius:8px">
       📱 Um link único será gerado. Quem abrir pelo celular pode editar o próprio nome e foto.
@@ -1364,15 +1392,17 @@ function openAddPessoa(grupoId) {
 
 async function savePessoa(grupoId) {
   const nome = document.getElementById('pessoaNome').value.trim() || 'Nova pessoa';
+  const telefone = document.getElementById('pessoaTelefone')?.value.trim() || '';
   try {
     const arquivoFoto = document.getElementById('pessoaFoto')?.files[0];
     if (arquivoFoto) {
       const fd = new FormData();
       fd.append('nome', nome);
+      if (telefone) fd.append('telefone', telefone);
       fd.append('foto', arquivoFoto);
       await apiUpload('POST', `/api/grupos/${grupoId}/pessoas`, fd);
     } else {
-      await api('POST', `/api/grupos/${grupoId}/pessoas`, {nome});
+      await api('POST', `/api/grupos/${grupoId}/pessoas`, {nome, telefone: telefone||undefined});
     }
     closeModal(); toast(`Link de "${nome}" criado ✅`,'ok');
     await renderCompartilhamentos(document.getElementById('mainContent'));
@@ -1381,30 +1411,35 @@ async function savePessoa(grupoId) {
 }
 
 async function openAddCompartilhamento() {
+  const isAdmin = CU.role === 'admin';
   let clientes = [];
-  try { clientes = await api('GET','/api/clientes'); } catch(e){}
-  document.getElementById('mTitle').textContent = 'Nova Demo com Localização';
+  if (isAdmin) { try { clientes = await api('GET','/api/clientes'); } catch(e){} }
+  document.getElementById('mTitle').textContent = 'Novo Link de Rastreamento';
   document.getElementById('mBody').innerHTML = `
-    <div class="mf"><label>Nome da Demo</label><input id="compNome" placeholder="Ex: Demo Felipe Sousa"/></div>
-    <div class="mf"><label>Cliente</label>
+    <div class="mf"><label>Nome</label><input id="compNome" placeholder="Ex: Demo Felipe Sousa"/></div>
+    <div class="mf"><label>Telefone (opcional)</label><input id="compTelefone" placeholder="Ex: (11) 99999-9999"/></div>
+    ${isAdmin ? `<div class="mf"><label>Cliente</label>
       <select id="compCliente">
         ${clientes.map(cl=>`<option value="${cl.id}">${cl.nome}</option>`).join('')}
       </select>
-    </div>
+    </div>` : ''}
     <div style="font-size:12px;color:var(--t2);margin:12px 0;padding:12px;background:var(--s2);border-radius:8px">
-      📱 Um link será gerado para o cliente abrir no celular. Ele vai pedir permissão de GPS e enviar a localização em tempo real no mapa.
+      📱 Um link será gerado para abrir no celular. Ele vai pedir permissão de GPS e enviar a localização em tempo real no mapa.
     </div>
-    <button class="mbtn" onclick="saveCompartilhamento()">Criar Demo</button>`;
+    <button class="mbtn" onclick="saveCompartilhamento()">Criar Link</button>`;
   openModal();
 }
 
 async function saveCompartilhamento() {
   const nome = document.getElementById('compNome').value.trim();
-  const cliente_id = parseInt(document.getElementById('compCliente').value);
+  const telefone = document.getElementById('compTelefone')?.value.trim() || '';
+  const selCliente = document.getElementById('compCliente');
   if (!nome) return toast('Nome é obrigatório','err');
   try {
-    await api('POST','/api/compartilhamentos',{nome,cliente_id});
-    closeModal(); toast(`Demo "${nome}" criada ✅`,'ok');
+    const payload = { nome, telefone: telefone||undefined };
+    if (selCliente) payload.cliente_id = parseInt(selCliente.value);
+    await api('POST','/api/compartilhamentos',payload);
+    closeModal(); toast(`Link "${nome}" criado ✅`,'ok');
     renderCompartilhamentos(document.getElementById('mainContent'));
   } catch(e) { toast(e.message,'err'); }
 }
@@ -1419,6 +1454,33 @@ async function deleteCompartilhamento(id) {
 
 function copyToClipboard(text) {
   navigator.clipboard.writeText(text).then(() => toast('Link copiado! 📋','ok')).catch(() => toast('Erro ao copiar','err'));
+}
+
+async function gerarSenhaPessoa(id, nome) {
+  try {
+    const d = await api('POST', `/api/compartilhamentos/${id}/senha`);
+    document.getElementById('mTitle').textContent = 'Senha gerada';
+    document.getElementById('mBody').innerHTML = `
+      <div style="font-size:13px;color:var(--t2);margin-bottom:12px">Envie essa senha pra <b>${nome}</b>. Sem ela ninguém abre o link de rastreamento dessa pessoa.</div>
+      <div class="mf"><label>Senha</label>
+        <div style="display:flex;gap:8px">
+          <input id="senhaGerada" readonly value="${d.senha}" style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:16px;letter-spacing:1px"/>
+          <button class="act-btn blue" style="white-space:nowrap" onclick="copyToClipboard(document.getElementById('senhaGerada').value)">📋 Copiar</button>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--t2);margin-top:8px">⚠️ Essa senha não fica salva em texto puro — guarde agora, se perder gere outra.</div>
+      <button class="mbtn" onclick="closeModal();renderCompartilhamentos(document.getElementById('mainContent'))" style="margin-top:14px">Fechar</button>`;
+    openModal();
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function removerSenhaPessoa(id, nome) {
+  if (!confirm(`Remover a senha de "${nome}"? O link volta a abrir livremente, sem pedir senha.`)) return;
+  try {
+    await api('DELETE', `/api/compartilhamentos/${id}/senha`);
+    toast('Senha removida','ok');
+    renderCompartilhamentos(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
 }
 
 async function renderFinanceiro(c) {

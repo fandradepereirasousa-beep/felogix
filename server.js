@@ -119,6 +119,32 @@ function gerarSenha() {
   return Array.from({length: 10}, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
+// Hash de senha de acesso aos links de rastreamento (independente do login do dashboard)
+function hashSenha(senha) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(senha, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+function verificarSenha(senha, armazenada) {
+  if (!senha || !armazenada) return false;
+  const [salt, hash] = armazenada.split(':');
+  if (!salt || !hash) return false;
+  const hashBuf = Buffer.from(hash, 'hex');
+  const testBuf = crypto.scryptSync(senha, salt, 64);
+  return hashBuf.length === testBuf.length && crypto.timingSafeEqual(hashBuf, testBuf);
+}
+function getCookie(req, name) {
+  const raw = req.headers.cookie;
+  if (!raw) return null;
+  for (const part of raw.split(';')) {
+    const p = part.trim();
+    const idx = p.indexOf('=');
+    if (idx === -1) continue;
+    if (p.slice(0, idx) === name) return decodeURIComponent(p.slice(idx + 1));
+  }
+  return null;
+}
+
 function auth(req, res, next) {
   const token = req.headers['authorization']?.split(' ')[1];
   if (!token) return res.status(401).json({ erro: 'Não autorizado' });
@@ -504,6 +530,12 @@ async function initDB() {
     await pool.query(`ALTER TABLE rastreadores_compartilhados ADD COLUMN IF NOT EXISTS foto VARCHAR(255)`);
   } catch (e) { console.warn('Migração rastreadores_compartilhados foto:', e.message); }
   try {
+    await pool.query(`ALTER TABLE rastreadores_compartilhados ADD COLUMN IF NOT EXISTS senha_hash VARCHAR(200)`);
+  } catch (e) { console.warn('Migração rastreadores_compartilhados senha_hash:', e.message); }
+  try {
+    await pool.query(`ALTER TABLE rastreadores_compartilhados ADD COLUMN IF NOT EXISTS telefone VARCHAR(20)`);
+  } catch (e) { console.warn('Migração rastreadores_compartilhados telefone:', e.message); }
+  try {
     await pool.query(`ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS foto VARCHAR(255)`);
   } catch (e) { console.warn('Migração veiculos foto:', e.message); }
   // Migração: modo de cobrança do personalizado (fixo | por_veiculo) e tabela de config
@@ -833,31 +865,63 @@ app.get('/api/traccar/status', auth, adminOnly, async (req, res) => {
 });
 
 /* ─── COMPARTILHAMENTO DE LOCALIZAÇÃO (Mobile/Demo) ─── */
-app.post('/api/compartilhamentos', auth, adminOnly, async (req, res) => {
-  const { nome, cliente_id } = req.body;
+app.post('/api/compartilhamentos', auth, async (req, res) => {
+  const { nome, telefone } = req.body;
+  const cliente_id = req.user.role === 'admin' ? parseInt(req.body.cliente_id) : req.user.id;
   if (!nome || !cliente_id) return res.status(400).json({ erro: 'Nome e cliente obrigatórios' });
   if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
+  if (telefone && !/^[\d\s()\-+]{8,20}$/.test(telefone)) return res.status(400).json({ erro: 'Telefone inválido' });
   try {
     const token = crypto.randomBytes(24).toString('hex');
     const r = await pool.query(
-      'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, ativo) VALUES ($1, $2, $3, true) RETURNING *',
-      [parseInt(cliente_id), token, nome.trim()]
+      'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, telefone, ativo) VALUES ($1, $2, $3, $4, true) RETURNING *',
+      [cliente_id, token, nome.trim(), telefone?.trim() || null]
     );
-    res.json({ ...r.rows[0], link: `${process.env.BASE_URL || 'https://felogix.com.br'}/track/${token}` });
+    const { senha_hash, ...resultado } = r.rows[0];
+    res.json({ ...resultado, link: `${process.env.BASE_URL || 'https://felogix.com.br'}/track/${token}` });
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 app.get('/api/compartilhamentos', auth, async (req, res) => {
+  const cols = `id, cliente_id, token, nome, telefone, tipo, latitude, longitude, precisao, velocidade,
+    direcao, ativo, expira_em, ultimo_update, foto, grupo_id, criado_em, (senha_hash IS NOT NULL) AS protegido`;
   let q, p;
   if (req.user.role === 'admin') {
-    q = 'SELECT * FROM rastreadores_compartilhados WHERE ativo=true ORDER BY criado_em DESC';
+    q = `SELECT ${cols} FROM rastreadores_compartilhados WHERE ativo=true ORDER BY criado_em DESC`;
     p = [];
   } else {
-    q = 'SELECT * FROM rastreadores_compartilhados WHERE ativo=true AND cliente_id=$1 ORDER BY criado_em DESC';
+    q = `SELECT ${cols} FROM rastreadores_compartilhados WHERE ativo=true AND cliente_id=$1 ORDER BY criado_em DESC`;
     p = [req.user.id];
   }
   const r = await pool.query(q, p);
   res.json(r.rows);
+});
+
+app.post('/api/compartilhamentos/:id/senha', auth, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  try {
+    const c = await pool.query('SELECT cliente_id FROM rastreadores_compartilhados WHERE id=$1 AND ativo=true', [id]);
+    if (!c.rows.length) return res.status(404).json({ erro: 'Não encontrado' });
+    if (req.user.role !== 'admin' && c.rows[0].cliente_id !== req.user.id)
+      return res.status(403).json({ erro: 'Sem permissão' });
+    const senha = gerarSenha();
+    await pool.query('UPDATE rastreadores_compartilhados SET senha_hash=$1 WHERE id=$2', [hashSenha(senha), id]);
+    res.json({ ok: true, senha });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.delete('/api/compartilhamentos/:id/senha', auth, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  try {
+    const c = await pool.query('SELECT cliente_id FROM rastreadores_compartilhados WHERE id=$1 AND ativo=true', [id]);
+    if (!c.rows.length) return res.status(404).json({ erro: 'Não encontrado' });
+    if (req.user.role !== 'admin' && c.rows[0].cliente_id !== req.user.id)
+      return res.status(403).json({ erro: 'Sem permissão' });
+    await pool.query('UPDATE rastreadores_compartilhados SET senha_hash=NULL WHERE id=$1', [id]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 const ultimoHistorico = new Map(); // compartilhamento_id -> timestamp do último ponto salvo (throttle)
@@ -883,9 +947,14 @@ app.post('/api/compartilhamentos/:token/location', async (req, res) => {
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
-app.delete('/api/compartilhamentos/:id', auth, adminOnly, async (req, res) => {
+app.delete('/api/compartilhamentos/:id', auth, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  if (req.user.role !== 'admin') {
+    const c = await pool.query('SELECT cliente_id FROM rastreadores_compartilhados WHERE id=$1', [id]);
+    if (!c.rows.length || c.rows[0].cliente_id !== req.user.id)
+      return res.status(403).json({ erro: 'Sem permissão' });
+  }
   await pool.query('UPDATE rastreadores_compartilhados SET ativo=false WHERE id=$1', [id]);
   res.json({ ok: true });
 });
@@ -923,22 +992,28 @@ app.get('/api/grupos', auth, async (req, res) => {
   res.json(r.rows);
 });
 
-app.post('/api/grupos', auth, adminOnly, async (req, res) => {
-  const { nome, cliente_id } = req.body;
+app.post('/api/grupos', auth, async (req, res) => {
+  const { nome } = req.body;
+  const cliente_id = req.user.role === 'admin' ? parseInt(req.body.cliente_id) : req.user.id;
   if (!nome || !cliente_id) return res.status(400).json({ erro: 'Nome e cliente são obrigatórios' });
   if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
   try {
     const r = await pool.query(
       'INSERT INTO grupos_rastreamento (cliente_id, nome) VALUES ($1, $2) RETURNING *',
-      [parseInt(cliente_id), nome.trim()]
+      [cliente_id, nome.trim()]
     );
     res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
-app.delete('/api/grupos/:id', auth, adminOnly, async (req, res) => {
+app.delete('/api/grupos/:id', auth, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  if (req.user.role !== 'admin') {
+    const g = await pool.query('SELECT cliente_id FROM grupos_rastreamento WHERE id=$1', [id]);
+    if (!g.rows.length || g.rows[0].cliente_id !== req.user.id)
+      return res.status(403).json({ erro: 'Sem permissão para este grupo' });
+  }
   await pool.query('UPDATE rastreadores_compartilhados SET ativo=false WHERE grupo_id=$1', [id]);
   await pool.query('DELETE FROM grupos_rastreamento WHERE id=$1', [id]);
   res.json({ ok: true });
@@ -952,25 +1027,32 @@ app.get('/api/grupos/:id/pessoas', auth, async (req, res) => {
     if (!grupo.rows.length || grupo.rows[0].cliente_id !== req.user.id)
       return res.status(403).json({ erro: 'Sem permissão para este grupo' });
   }
-  const r = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE grupo_id=$1 AND ativo=true ORDER BY criado_em DESC', [id]);
+  const cols = `id, cliente_id, token, nome, telefone, tipo, latitude, longitude, precisao, velocidade,
+    direcao, ativo, expira_em, ultimo_update, foto, grupo_id, criado_em, (senha_hash IS NOT NULL) AS protegido`;
+  const r = await pool.query(`SELECT ${cols} FROM rastreadores_compartilhados WHERE grupo_id=$1 AND ativo=true ORDER BY criado_em DESC`, [id]);
   res.json(r.rows);
 });
 
-app.post('/api/grupos/:id/pessoas', auth, adminOnly, uploadFoto, async (req, res) => {
+app.post('/api/grupos/:id/pessoas', auth, uploadFoto, async (req, res) => {
   const grupoId = parseInt(req.params.id);
   if (!grupoId) return res.status(400).json({ erro: 'Grupo inválido' });
   const nome = (req.body.nome || 'Nova pessoa').trim();
+  const telefone = req.body.telefone;
   if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
+  if (telefone && !/^[\d\s()\-+]{8,20}$/.test(telefone)) return res.status(400).json({ erro: 'Telefone inválido' });
   try {
     const grupo = await pool.query('SELECT cliente_id FROM grupos_rastreamento WHERE id=$1', [grupoId]);
     if (!grupo.rows.length) return res.status(404).json({ erro: 'Grupo não encontrado' });
+    if (req.user.role !== 'admin' && grupo.rows[0].cliente_id !== req.user.id)
+      return res.status(403).json({ erro: 'Sem permissão para este grupo' });
     const token = crypto.randomBytes(24).toString('hex');
     const foto = req.file ? '/uploads/' + req.file.filename : null;
     const r = await pool.query(
-      'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, tipo, grupo_id, ativo, foto) VALUES ($1, $2, $3, $4, $5, true, $6) RETURNING *',
-      [grupo.rows[0].cliente_id, token, nome, 'pessoa', grupoId, foto]
+      'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, telefone, tipo, grupo_id, ativo, foto) VALUES ($1, $2, $3, $4, $5, $6, true, $7) RETURNING *',
+      [grupo.rows[0].cliente_id, token, nome, telefone?.trim() || null, 'pessoa', grupoId, foto]
     );
-    res.json({ ...r.rows[0], link: `${process.env.BASE_URL || 'https://felogix.com.br'}/track/${token}` });
+    const { senha_hash, ...resultado } = r.rows[0];
+    res.json({ ...resultado, link: `${process.env.BASE_URL || 'https://felogix.com.br'}/track/${token}` });
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
@@ -1147,10 +1229,94 @@ app.get('/api/financeiro/emails', auth, adminOnly, async (req, res) => {
 });
 
 /* ─── PÁGINA DE TRACKING (compartilhamento) ─── */
+function paginaSenhaTrack(token) {
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Felogix - Acesso protegido</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #f5f5f5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .box { background: white; border-radius: 10px; padding: 28px 24px; max-width: 340px; width: 100%; box-shadow: 0 2px 12px rgba(0,0,0,.1); text-align: center; }
+    .lock { font-size: 40px; margin-bottom: 8px; }
+    h2 { color: #222; font-size: 18px; margin-bottom: 8px; }
+    p { color: #666; font-size: 13px; margin-bottom: 18px; line-height: 1.4; }
+    input { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; margin-bottom: 12px; text-align: center; }
+    button { width: 100%; background: #1976D2; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; font-size: 15px; }
+    button:hover { background: #1565C0; }
+    button:disabled { opacity: .6; }
+    .err { color: #d32f2f; font-size: 13px; margin-top: 10px; min-height: 16px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="lock">🔒</div>
+    <h2>Acesso protegido</h2>
+    <p>Esse link tem uma senha. Peça a senha pra quem te enviou o link.</p>
+    <input type="password" id="senhaInp" placeholder="Digite a senha" maxlength="50" autofocus>
+    <button id="btnEntrar">Entrar</button>
+    <div class="err" id="errMsg"></div>
+  </div>
+  <script>
+    const TOKEN = '${token}';
+    async function entrar() {
+      const senha = document.getElementById('senhaInp').value;
+      const btn = document.getElementById('btnEntrar');
+      const err = document.getElementById('errMsg');
+      err.textContent = '';
+      if (!senha) { err.textContent = 'Digite a senha'; return; }
+      btn.disabled = true; btn.textContent = 'Verificando...';
+      try {
+        const resp = await fetch('/api/track/' + TOKEN + '/login', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ senha })
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.erro || 'Senha incorreta');
+        location.reload();
+      } catch (e) {
+        err.textContent = e.message;
+        btn.disabled = false; btn.textContent = 'Entrar';
+      }
+    }
+    document.getElementById('btnEntrar').onclick = entrar;
+    document.getElementById('senhaInp').addEventListener('keydown', e => { if (e.key === 'Enter') entrar(); });
+  </script>
+</body>
+</html>`;
+}
+
+app.post('/api/track/:token/login', rateLimit(10, 60000), async (req, res) => {
+  const { senha } = req.body;
+  if (!senha || typeof senha !== 'string') return res.status(400).json({ erro: 'Senha obrigatória' });
+  try {
+    const r = await pool.query('SELECT senha_hash FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    if (!r.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
+    if (r.rows[0].senha_hash && !verificarSenha(senha, r.rows[0].senha_hash))
+      return res.status(401).json({ erro: 'Senha incorreta' });
+    const sessao = jwt.sign({ tk: req.params.token }, JWT_SECRET, { expiresIn: '180d' });
+    res.cookie('trk_auth', sessao, {
+      httpOnly: true, sameSite: 'lax', secure: req.protocol === 'https',
+      maxAge: 1000 * 60 * 60 * 24 * 180, path: '/track/' + req.params.token
+    });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
 app.get('/track/:token', async (req, res) => {
   const r = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
   if (!r.rows.length) return res.status(404).send('Link expirado ou inválido');
   const rastreador = r.rows[0];
+  if (rastreador.senha_hash) {
+    let autorizado = false;
+    const cookieTok = getCookie(req, 'trk_auth');
+    if (cookieTok) {
+      try { autorizado = jwt.verify(cookieTok, JWT_SECRET).tk === rastreador.token; } catch {}
+    }
+    if (!autorizado) return res.send(paginaSenhaTrack(rastreador.token));
+  }
   const nomeSeguro = escapeHtml(rastreador.nome);
   const fotoSegura = rastreador.foto ? escapeHtml(rastreador.foto) : '';
   res.send(`<!DOCTYPE html>

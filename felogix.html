@@ -491,7 +491,7 @@ function renderMapa(c) {
       <div class="fab" onclick="centerAll()">⊙</div>
     </div>
   </div>`;
-  setTimeout(() => initMap(), 80);
+  requestAnimationFrame(() => requestAnimationFrame(() => initMap()));
   loadVehicles();
 }
 
@@ -583,7 +583,7 @@ function initMap() {
   VEHICLES.forEach(v => addMkr(v));
   syncMkrs();
   centerAll();
-  setTimeout(() => map && map.invalidateSize(), 300);
+  [0, 150, 350, 700, 1200].forEach(ms => setTimeout(() => { if (map) { map.invalidateSize(); centerAll(); } }, ms));
   const wrap = document.getElementById('mapWrap');
   if (wrap && window.ResizeObserver) {
     const ro = new ResizeObserver(() => map && map.invalidateSize());

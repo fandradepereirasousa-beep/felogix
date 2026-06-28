@@ -339,6 +339,9 @@ async function verificarLembreteMensal(){
     const drafts = await montarRascunhos(mesRef);
     const cobr = drafts.filter(d => !d.cortesia && !d.ja_enviado && d.valor > 0);
     const total = cobr.reduce((s, d) => s + d.valor, 0);
+    // Removido: não enviar lembrete automático
+    return; // Sair sem enviar email
+    /*
     await sendMail(LEMBRETE_EMAIL, `Felogix — faturas de ${fmtMesRef(mesRef)} prontas para revisar`,
       `<div style="font-family:sans-serif;max-width:500px;margin:auto">
         <h2 style="color:#D91A1A">Felogix</h2>
@@ -350,6 +353,7 @@ async function verificarLembreteMensal(){
       </div>`);
     await pool.query(`INSERT INTO config (chave,valor) VALUES ('lembrete_mes',$1) ON CONFLICT (chave) DO UPDATE SET valor=$1`, [mesRef]);
     console.log(`Lembrete de faturamento (${mesRef}) enviado ao admin`);
+    */
   } catch (e) { console.error('verificarLembreteMensal:', e.message); }
 }
 
@@ -842,7 +846,7 @@ app.post('/api/financeiro/cobrar', auth, adminOnly, async (req, res) => {
 
     if (cli.plano === 'cortesia') {
       await pool.query('INSERT INTO pagamentos (cliente_id,mes_ref,valor,pago,data_pagamento) VALUES ($1,$2,0,true,NOW()) ON CONFLICT (cliente_id,mes_ref) DO NOTHING', [cliente_id, mesRef]);
-      await enviarCortesia(cli, mesRef);
+      // await enviarCortesia(cli, mesRef); // Removido: não enviar email automático
       return res.json({ ok: true, cortesia: true, valor: 0, mes_ref: mesRef });
     }
 
@@ -851,7 +855,7 @@ app.post('/api/financeiro/cobrar', auth, adminOnly, async (req, res) => {
       'INSERT INTO pagamentos (cliente_id,mes_ref,valor) VALUES ($1,$2,$3) ON CONFLICT (cliente_id,mes_ref) DO UPDATE SET valor=$3',
       [cliente_id, mesRef, f.valor]
     );
-    await enviarFatura(cli, mesRef, f.valor, f.qtd);
+    // await enviarFatura(cli, mesRef, f.valor, f.qtd); // Removido: não enviar email automático
     res.json({ ok: true, valor: f.valor, qtd: f.qtd, mes_ref: mesRef });
   } catch (err) { console.error(err); res.status(500).json({ erro: 'Erro interno' }); }
 });
@@ -901,7 +905,7 @@ app.post('/api/financeiro/enviar', auth, adminOnly, async (req, res) => {
         if (!isEmail(cli.email || '')) { falhas.push({ cliente_id: cid, nome: cli.nome, motivo: 'e-mail inválido' }); continue; }
 
         if (cli.plano === 'cortesia') {
-          await enviarCortesia(cli, mesRef);
+          // await enviarCortesia(cli, mesRef); // Removido: não enviar email automático
           await pool.query('INSERT INTO pagamentos (cliente_id,mes_ref,valor,pago,data_pagamento,enviado_em) VALUES ($1,$2,0,true,NOW(),NOW()) ON CONFLICT (cliente_id,mes_ref) DO UPDATE SET enviado_em=NOW()', [cli.id, mesRef]);
           await registrarEmailLog(cli, mesRef, 'cortesia', 'Felogix — obrigado por mais um mês!', 0);
           enviados++; continue;

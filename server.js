@@ -142,7 +142,7 @@ function paginaSeletora() {
     <a class="card" href="/track">
       <div class="card-ic">🚗</div>
       <div class="card-t">Felogix Track</div>
-      <div class="card-d">Rastreamento veicular e de equipamentos em tempo real.</div>
+      <div class="card-d">Rastreador e bloqueador veicular em tempo real.</div>
       <span class="badge live">Disponível</span>
     </a>
     <div class="card disabled">

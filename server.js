@@ -127,7 +127,9 @@ const CSS_BASE = `
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:'Segoe UI',Arial,sans-serif; background:#0C0C0C; color:#fff; min-height:100vh; }
 .topo { display:flex; align-items:center; justify-content:space-between; padding:18px 32px; border-bottom:1px solid #1f1f1f; flex-wrap:wrap; gap:14px; }
-.topo-logo { display:flex; align-items:center; gap:10px; text-decoration:none; color:#fff; font-weight:900; font-size:17px; letter-spacing:-.5px; }
+.topo-logo { display:flex; align-items:center; gap:8px; text-decoration:none; color:#fff; }
+.topo-logo svg { flex-shrink:0; }
+.topo-logo-text { font-weight:900; font-size:18px; letter-spacing:-.3px; line-height:1; white-space:nowrap; }
 .topo-nav { display:flex; gap:22px; flex-wrap:wrap; }
 .topo-nav a { color:#9a9a9a; text-decoration:none; font-size:13px; font-weight:600; padding:6px 2px; border-bottom:2px solid transparent; }
 .topo-nav a:hover { color:#fff; }
@@ -148,19 +150,19 @@ const PRODUTOS = [
     cor: '#D91A1A',
     status: 'disponivel',
     appHref: '/track',
-    descricao: 'Monitore seus veículos em tempo real, com bloqueio remoto de ignição, histórico de trajetos e alertas inteligentes de velocidade e conexão.',
+    descricao: 'Monitore seus veículos em tempo real, com bloqueio preventivo de ignição, histórico de trajetos e alertas inteligentes de velocidade e conexão.',
     funcionalidades: [
       'Rastreamento em tempo real no mapa, com histórico de trajetos',
-      'Bloqueio e desbloqueio remoto de ignição via hardware GPS',
+      'Bloqueio preventivo remoto de ignição via hardware GPS',
       'Alertas de velocidade e de veículo offline',
       'Perfil pessoal (CPF) ou empresarial (CNPJ) com hierarquia de colaboradores',
       'Painel web responsivo, acesso de qualquer lugar'
     ],
     beneficios: [
-      'Recupere o veículo rapidamente em caso de roubo ou furto',
+      'Apoie a localização do veículo pelas autoridades em caso de roubo ou furto',
+      'Reduza o risco de uso indevido com bloqueio preventivo de ignição',
       'Reduza custos de combustível e manutenção com dados reais de uso',
-      'Tenha visibilidade total da frota ou do veículo pessoal',
-      'Aumente a segurança de motoristas e cargas'
+      'Tenha visibilidade total da frota ou do veículo pessoal'
     ]
   },
   {
@@ -240,7 +242,7 @@ function navProdutos(slugAtual) {
 
 function topoFelogix(slugAtual) {
   return `<header class="topo">
-    <a href="/" class="topo-logo">${logoSvg(26)} FEL<span style="color:#D91A1A">O</span>GIX</a>
+    <a href="/" class="topo-logo">${logoSvg(28)}<span class="topo-logo-text">FEL<span style="color:#D91A1A">O</span>GIX</span></a>
     <nav class="topo-nav">${navProdutos(slugAtual)}</nav>
   </header>`;
 }
@@ -258,20 +260,24 @@ function paginaSeletora() {
   <style>
     ${CSS_BASE}
     body { display:flex; flex-direction:column; }
-    .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:clamp(18px,5vh,48px) 20px clamp(14px,3vh,28px); }
-    .hero .logo-grande svg { width:clamp(30px,8vw,52px); height:clamp(30px,8vw,52px); }
-    .hero .logo-grande { margin-bottom:clamp(8px,2vh,16px); }
-    h1 { font-size:clamp(18px,4.2vw,26px); font-weight:700; max-width:560px; line-height:1.3; margin-bottom:8px; }
-    .sub { color:#9a9a9a; font-size:clamp(12px,2.8vw,15px); max-width:480px; line-height:1.5; }
-    .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:clamp(10px,2.5vw,18px); max-width:520px; width:100%; margin:0 auto; padding:0 20px clamp(16px,3vh,32px); flex:1; align-content:center; }
-    .card { background:#141414; border:1px solid #232323; border-top:3px solid #444; border-radius:14px; padding:clamp(14px,3vw,24px) clamp(12px,3vw,20px); text-decoration:none; color:#fff; transition:border-color .15s,transform .15s; display:flex; flex-direction:column; align-items:flex-start; }
+    .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:clamp(12px,3.5vh,36px) 20px clamp(8px,2vh,18px); }
+    .hero .logo-grande svg { width:clamp(26px,7vw,46px); height:clamp(26px,7vw,46px); }
+    .hero .logo-grande { margin-bottom:clamp(6px,1.5vh,12px); }
+    h1 { font-size:clamp(17px,4vw,24px); font-weight:700; max-width:560px; line-height:1.25; margin-bottom:6px; }
+    .sub { color:#9a9a9a; font-size:clamp(11px,2.6vw,14px); max-width:480px; line-height:1.4; }
+    .cta-principal { display:inline-block; margin-top:clamp(10px,2vh,16px); background:#D91A1A; color:#fff; font-weight:700; font-size:clamp(12px,2.8vw,14px); padding:clamp(9px,2vw,12px) clamp(20px,4.5vw,28px); border-radius:8px; text-decoration:none; box-shadow:0 4px 14px rgba(217,26,26,.35); transition:transform .15s,box-shadow .15s; }
+    .cta-principal:hover { transform:translateY(-2px); box-shadow:0 6px 18px rgba(217,26,26,.45); }
+    .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:clamp(8px,2.2vw,16px); max-width:500px; width:100%; margin:0 auto; padding:0 20px clamp(10px,2vh,22px); flex:1; align-content:center; }
+    .card { background:#141414; border:1px solid #232323; border-top:3px solid #444; border-radius:14px; padding:clamp(11px,2.5vw,20px) clamp(10px,2.5vw,16px); text-decoration:none; color:#fff; transition:border-color .15s,transform .15s,opacity .15s; display:flex; flex-direction:column; align-items:flex-start; }
     .card:hover { transform:translateY(-3px); }
-    .card-ic { font-size:clamp(22px,6vw,30px); margin-bottom:clamp(6px,1.5vh,12px); }
+    .card.em-breve { opacity:.7; }
+    .card.em-breve:hover { opacity:1; }
+    .card-ic { font-size:clamp(20px,5.5vw,28px); margin-bottom:clamp(4px,1vh,10px); }
     .card-t { font-size:clamp(13px,3vw,16px); font-weight:700; margin-bottom:4px; }
     .card-d { font-size:clamp(11px,2.5vw,13px); color:#9a9a9a; line-height:1.4; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-    .badge { display:inline-block; margin-top:clamp(6px,1.5vh,12px); font-size:clamp(9px,2vw,11px); font-weight:600; padding:2px 8px; border-radius:20px; background:#222; color:#9a9a9a; }
+    .badge { display:inline-block; margin-top:clamp(4px,1vh,10px); font-size:clamp(9px,2vw,11px); font-weight:600; padding:2px 8px; border-radius:20px; background:#222; color:#9a9a9a; }
     .badge.live { background:#1b3a1f; color:#5ed16a; }
-    footer.rodape { padding:8px 20px clamp(10px,2vh,20px); flex-shrink:0; }
+    footer.rodape { padding:6px 20px clamp(6px,1.2vh,14px); flex-shrink:0; }
   </style>
 </head>
 <body>
@@ -280,10 +286,11 @@ function paginaSeletora() {
     <div class="logo-grande">${logoSvg(56)}</div>
     <h1>A tecnologia por trás de cada produto Felogix.</h1>
     <div class="sub">Rastreamento, frotas, localização e segurança — em um único ecossistema.</div>
+    <a href="mailto:felogix.br@gmail.com?subject=Quero%20conhecer%20a%20Felogix" class="cta-principal">Falar com um Especialista</a>
   </section>
   <div class="grid">
     ${PRODUTOS.map(p => `
-    <a class="card" style="border-top-color:${p.cor}" href="/produtos/${p.slug}">
+    <a class="card${p.status === 'disponivel' ? '' : ' em-breve'}" style="border-top-color:${p.cor}" href="/produtos/${p.slug}">
       <div class="card-ic">${p.icone}</div>
       <div class="card-t">${p.nome}</div>
       <div class="card-d">${p.tagline}</div>

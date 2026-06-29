@@ -156,13 +156,19 @@ function paginaSeletora() {
       <div class="card-ic">🚚</div>
       <div class="card-t">Felogix Fleet</div>
       <div class="card-d">Gestão de frotas para empresas.</div>
-      <span class="badge">Em construção</span>
+      <span class="badge">Em breve</span>
     </div>
     <div class="card disabled">
       <div class="card-ic">📍</div>
       <div class="card-t">Felogix Connect</div>
       <div class="card-d">Compartilhamento de localização entre família, amigos e equipes.</div>
-      <span class="badge">Em construção</span>
+      <span class="badge">Em breve</span>
+    </div>
+    <div class="card disabled">
+      <div class="card-ic">🛡️</div>
+      <div class="card-t">Felogix Patrol</div>
+      <div class="card-d">Rondas, checklists e auditoria para segurança patrimonial.</div>
+      <span class="badge">Em breve</span>
     </div>
   </div>
   <footer>Felogix © ${new Date().getFullYear()}</footer>
@@ -201,6 +207,7 @@ app.get('/', (req, res) => res.send(paginaSeletora()));
 app.get('/track', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.get('/fleet', (req, res) => res.send(paginaEmConstrucao('Felogix Fleet', 'Gestão completa de frotas para empresas.')));
 app.get('/connect', (req, res) => res.send(paginaEmConstrucao('Felogix Connect', 'Compartilhamento de localização entre família, amigos e equipes.')));
+app.get('/patrol', (req, res) => res.send(paginaEmConstrucao('Felogix Patrol', 'Rondas, checklists e auditoria para segurança patrimonial.')));
 
 app.use(express.static(path.join(__dirname, 'public')));
 

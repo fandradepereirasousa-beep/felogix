@@ -139,3 +139,20 @@ jobs:
               systemctl status traccar --no-pager -l | tail -n 30
               exit 1
             fi
+
+      - name: Diagnóstico extra (só leitura) se o listener GT06 ainda não subiu
+        if: always()
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: false
+          script: |
+            echo "--- entrada gt06 em traccar.xml ---"
+            grep -n -i "gt06" /opt/traccar/conf/traccar.xml || echo "nenhuma entrada gt06 encontrada em traccar.xml"
+            echo "--- todas as portas UDP/TCP em escuta agora ---"
+            ss -ltun
+            echo "--- ultimas 150 linhas do journal do traccar (procurando erros de bind/porta) ---"
+            journalctl -u traccar --no-pager -n 150

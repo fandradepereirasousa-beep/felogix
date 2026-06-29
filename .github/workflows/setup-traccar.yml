@@ -2,11 +2,11 @@ name: Configurar Traccar no VPS
 
 # Disparo manual — o Traccar já está instalado nativamente no VPS (fora de
 # Docker, como serviço systemd "traccar", confirmado via diagnóstico). O que
-# faltava era o listener GT06 (5023/udp): o traccar.xml não tinha a porta do
-# protocolo configurada. Este workflow só completa o que falta — nunca
-# reinstala nem substitui o que já está rodando. Idempotente: pode rodar de
-# novo a qualquer momento sem risco (se o gt06.port já existir, não toca em
-# nada).
+# faltava era o listener GT06 (5023/tcp — o protocolo GT06 é TCP, não UDP):
+# o traccar.xml não tinha a porta do protocolo configurada. Este workflow só
+# completa o que falta — nunca reinstala nem substitui o que já está
+# rodando. Idempotente: pode rodar de novo a qualquer momento sem risco (se
+# o gt06.port já existir, não toca em nada).
 on:
   workflow_dispatch:
 
@@ -14,7 +14,7 @@ jobs:
   setup-traccar:
     runs-on: ubuntu-latest
     steps:
-      - name: Habilitar listener GT06 (5023/udp) se ainda não estiver configurado
+      - name: Habilitar listener GT06 (5023/tcp) se ainda não estiver configurado
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -59,7 +59,7 @@ jobs:
             echo "--- status do serviço traccar ---"
             systemctl is-active traccar
 
-      - name: Abrir porta 5023/UDP no firewall (se ufw estiver ativo)
+      - name: Abrir porta 5023/TCP no firewall (protocolo real do GT06; se ufw estiver ativo)
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -69,12 +69,12 @@ jobs:
           script_stop: false
           script: |
             if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-              ufw allow 5023/udp
+              ufw allow 5023/tcp
               echo "Regra garantida. Status atual:"
               ufw status | grep -E "5023|Status"
             else
               echo "ufw inativo ou não instalado neste VPS — nada a fazer aqui."
-              echo "Se o provedor usa firewall/security group externo, libere 5023/UDP entrante manualmente."
+              echo "Se o provedor usa firewall/security group externo, libere 5023/TCP entrante manualmente."
             fi
 
       - name: Sincronizar credencial do Traccar com a esperada pelo app (sem expor valores)
@@ -126,12 +126,12 @@ jobs:
           script_stop: false
           script: |
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8082/api/server)
-            UDP_LISTEN=$(ss -lun | grep -c ":5023 " || true)
+            TCP_LISTEN=$(ss -ltn | grep -c ":5023 " || true)
 
             echo "HTTP do Traccar (localhost:8082): $STATUS"
-            echo "Listener GT06 em 5023/UDP ativo: $([ "$UDP_LISTEN" -gt 0 ] && echo sim || echo não)"
+            echo "Listener GT06 em 5023/TCP ativo: $([ "$TCP_LISTEN" -gt 0 ] && echo sim || echo não)"
 
-            if [ "$STATUS" = "200" ] && [ "$UDP_LISTEN" -gt 0 ]; then
+            if [ "$STATUS" = "200" ] && [ "$TCP_LISTEN" -gt 0 ]; then
               echo "✓ Traccar pronto para receber os rastreadores"
               exit 0
             else
@@ -139,20 +139,3 @@ jobs:
               systemctl status traccar --no-pager -l | tail -n 30
               exit 1
             fi
-
-      - name: Diagnóstico extra (só leitura) se o listener GT06 ainda não subiu
-        if: always()
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT }}
-          script_stop: false
-          script: |
-            echo "--- entrada gt06 em traccar.xml ---"
-            grep -n -i "gt06" /opt/traccar/conf/traccar.xml || echo "nenhuma entrada gt06 encontrada em traccar.xml"
-            echo "--- todas as portas UDP/TCP em escuta agora ---"
-            ss -ltun
-            echo "--- ultimas 150 linhas do journal do traccar (procurando erros de bind/porta) ---"
-            journalctl -u traccar --no-pager -n 150

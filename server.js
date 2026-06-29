@@ -257,27 +257,29 @@ function paginaSeletora() {
   <link rel="icon" href="${FAVICON_HREF}"/>
   <style>
     ${CSS_BASE}
-    .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:64px 20px 52px; }
-    .hero .logo-grande { margin-bottom:20px; }
-    h1 { font-size:26px; font-weight:700; max-width:640px; line-height:1.35; margin-bottom:14px; }
-    .sub { color:#9a9a9a; font-size:15px; max-width:540px; line-height:1.55; }
-    .grid { display:flex; flex-wrap:wrap; gap:18px; justify-content:center; max-width:980px; width:100%; margin:0 auto; padding:0 20px 64px; }
-    .card { background:#141414; border:1px solid #232323; border-top:3px solid #444; border-radius:14px; padding:26px 22px; width:225px; text-decoration:none; color:#fff; transition:border-color .15s,transform .15s; display:block; }
+    body { display:flex; flex-direction:column; }
+    .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:clamp(18px,5vh,48px) 20px clamp(14px,3vh,28px); }
+    .hero .logo-grande svg { width:clamp(30px,8vw,52px); height:clamp(30px,8vw,52px); }
+    .hero .logo-grande { margin-bottom:clamp(8px,2vh,16px); }
+    h1 { font-size:clamp(18px,4.2vw,26px); font-weight:700; max-width:560px; line-height:1.3; margin-bottom:8px; }
+    .sub { color:#9a9a9a; font-size:clamp(12px,2.8vw,15px); max-width:480px; line-height:1.5; }
+    .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:clamp(10px,2.5vw,18px); max-width:520px; width:100%; margin:0 auto; padding:0 20px clamp(16px,3vh,32px); flex:1; align-content:center; }
+    .card { background:#141414; border:1px solid #232323; border-top:3px solid #444; border-radius:14px; padding:clamp(14px,3vw,24px) clamp(12px,3vw,20px); text-decoration:none; color:#fff; transition:border-color .15s,transform .15s; display:flex; flex-direction:column; align-items:flex-start; }
     .card:hover { transform:translateY(-3px); }
-    .card-ic { font-size:30px; margin-bottom:14px; }
-    .card-t { font-size:16px; font-weight:700; margin-bottom:6px; }
-    .card-d { font-size:13px; color:#9a9a9a; line-height:1.45; min-height:50px; }
-    .badge { display:inline-block; margin-top:14px; font-size:11px; font-weight:600; padding:3px 9px; border-radius:20px; background:#222; color:#9a9a9a; }
+    .card-ic { font-size:clamp(22px,6vw,30px); margin-bottom:clamp(6px,1.5vh,12px); }
+    .card-t { font-size:clamp(13px,3vw,16px); font-weight:700; margin-bottom:4px; }
+    .card-d { font-size:clamp(11px,2.5vw,13px); color:#9a9a9a; line-height:1.4; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .badge { display:inline-block; margin-top:clamp(6px,1.5vh,12px); font-size:clamp(9px,2vw,11px); font-weight:600; padding:2px 8px; border-radius:20px; background:#222; color:#9a9a9a; }
     .badge.live { background:#1b3a1f; color:#5ed16a; }
-    @media (max-width:640px) { .hero { padding:48px 18px 40px; } h1 { font-size:21px; } }
+    footer.rodape { padding:8px 20px clamp(10px,2vh,20px); flex-shrink:0; }
   </style>
 </head>
 <body>
   ${topoFelogix(null)}
   <section class="hero">
     <div class="logo-grande">${logoSvg(56)}</div>
-    <h1>A Felogix é a tecnologia por trás do rastreamento, da gestão de frotas, da localização compartilhada e da segurança patrimonial.</h1>
-    <div class="sub">Um único ecossistema, quatro produtos especializados — escolha o seu abaixo.</div>
+    <h1>A tecnologia por trás de cada produto Felogix.</h1>
+    <div class="sub">Rastreamento, frotas, localização e segurança — em um único ecossistema.</div>
   </section>
   <div class="grid">
     ${PRODUTOS.map(p => `

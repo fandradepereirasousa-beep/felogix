@@ -21,7 +21,7 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          script_stop: true
+          script_stop: false
           script: |
             set -e
             CONF=/opt/traccar/conf/traccar.xml
@@ -123,7 +123,7 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          script_stop: true
+          script_stop: false
           script: |
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8082/api/server)
             UDP_LISTEN=$(ss -lun | grep -c ":5023 " || true)

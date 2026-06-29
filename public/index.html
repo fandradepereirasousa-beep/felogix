@@ -474,6 +474,7 @@ function buildNav() {
   const gestorTabs = [
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
     {ic:'🚗',lbl:'Veículos',id:'veiculos'},
+    {ic:'📍',lbl:'Geocercas',id:'geocercas'},
     {ic:'🔔',lbl:'Alertas',id:'alertas'},
   ];
   if (CU.tipo === 'cnpj') gestorTabs.push({ic:'🧑‍🤝‍🧑',lbl:'Equipe',id:'equipe'});
@@ -507,6 +508,7 @@ function goTab(id, el) {
     financeiro: () => renderFinanceiro(c),
     alertas:    () => renderAlertas(c),
     equipe:     () => renderEquipe(c),
+    geocercas:  () => renderGeocercas(c),
   };
   if (map_[id]) map_[id]();
 }
@@ -1354,6 +1356,114 @@ async function salvarAlertas() {
   try {
     await api('PUT','/api/alertas',body);
     toast('Preferências salvas ✅','ok');
+  } catch(e) { toast(e.message,'err'); }
+}
+
+/* ─── GEOCERCAS (Felogix Track) ─── */
+let gcMiniMap = null, gcMiniMarker = null, gcMiniCircle = null, gcLat = null, gcLon = null, gcEditId = null;
+
+async function renderGeocercas(c) {
+  c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
+  if (CU.role==='admin') { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">📍</div><div class="et">Geocercas são configuradas por cliente</div></div></div>`; return; }
+  try {
+    const geocercas = await api('GET','/api/geocercas');
+    c.innerHTML = `<div class="pp">
+      <div class="sec-title">Geocercas <span style="color:var(--t2);font-size:11px;font-weight:400">${geocercas.length}</span><button class="add-btn" onclick="openGeocercaModal()">＋ Nova Geocerca</button></div>
+      <div style="font-size:12px;color:var(--t2);margin-bottom:14px;padding:12px;background:var(--s2);border-radius:8px">
+        📍 Defina uma área no mapa. Quando o veículo entrar ou saír dela, um alerta é registrado (ative em <b>Alertas → Saída de geocerca</b>).
+      </div>
+      ${!geocercas.length ? `<div class="empty"><div class="ei">📍</div><div class="et">Nenhuma geocerca criada</div><div class="es">Crie uma área (ex: garagem, pátio, cidade autorizada) para ser avisado quando o veículo entrar ou sair</div></div>` :
+        geocercas.map(g => `<div class="card">
+          <div class="card-top">
+            <span style="font-size:18px">📍</span>
+            <div class="card-info">
+              <div class="card-title">${g.nome} ${g.ativo?'':'<span style="color:var(--t2);font-size:11px">(desativada)</span>'}</div>
+              <div class="card-sub">Raio de ${g.raio_m >= 1000 ? (g.raio_m/1000).toFixed(1)+' km' : g.raio_m+' m'} · ${g.placa ? 'Veículo '+g.placa : 'Toda a frota'}</div>
+            </div>
+          </div>
+          <div class="acts-row">
+            <div class="act-btn blue" onclick='openGeocercaModal(${JSON.stringify(g).replace(/'/g,"&#39;")})'>✏️ Editar</div>
+            <div class="act-btn red" onclick="if(confirm('Remover a geocerca \\'${g.nome.replace(/'/g,"\\'")}\\'?'))deleteGeocerca(${g.id})">🗑 Remover</div>
+          </div>
+        </div>`).join('')}
+    </div>`;
+  } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+async function openGeocercaModal(g) {
+  gcEditId = g ? g.id : null;
+  gcLat = g ? parseFloat(g.latitude) : null;
+  gcLon = g ? parseFloat(g.longitude) : null;
+  let veiculos = [];
+  try { veiculos = await api('GET','/api/veiculos'); } catch(e) {}
+  document.getElementById('mTitle').textContent = g ? 'Editar Geocerca' : 'Nova Geocerca';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Nome</label><input id="gcNome" placeholder="Ex: Garagem, Pátio da empresa" value="${g ? g.nome.replace(/"/g,'&quot;') : ''}"/></div>
+    <div class="mf"><label>Aplicar a</label>
+      <select id="gcVeiculo">
+        <option value="">Toda a frota</option>
+        ${veiculos.map(v=>`<option value="${v.id}" ${g && g.veiculo_id===v.id?'selected':''}>${v.placa}${v.modelo?' · '+v.modelo:''}</option>`).join('')}
+      </select>
+    </div>
+    <div class="mf"><label>Raio: <span id="gcRaioLbl">${g ? g.raio_m : 500}</span> m</label>
+      <input type="range" id="gcRaio" min="50" max="20000" step="50" value="${g ? g.raio_m : 500}" style="width:100%" oninput="document.getElementById('gcRaioLbl').textContent=this.value; gcAtualizarCirculo();"/>
+    </div>
+    <div class="mf"><label>Centro da área (clique no mapa para definir)</label>
+      <div id="gcMiniMap" style="width:100%;height:200px;border-radius:8px;overflow:hidden;border:1px solid var(--b1)"></div>
+      <div style="font-size:11px;color:var(--t2);margin-top:6px" id="gcCoordLbl">${gcLat!=null ? gcLat.toFixed(5)+', '+gcLon.toFixed(5) : 'Clique no mapa para escolher o centro'}</div>
+    </div>
+    <button class="mbtn" onclick="saveGeocerca()">Salvar Geocerca</button>`;
+  openModal();
+  requestAnimationFrame(() => requestAnimationFrame(() => gcInitMiniMap()));
+}
+
+function gcInitMiniMap() {
+  if (gcMiniMap) { gcMiniMap.remove(); gcMiniMap = null; gcMiniMarker = null; gcMiniCircle = null; }
+  const el = document.getElementById('gcMiniMap');
+  if (!el) return;
+  const center = gcLat != null ? [gcLat, gcLon] : (VEHICLES[0] ? [VEHICLES[0].lat, VEHICLES[0].lon] : [-23.549, -46.638]);
+  gcMiniMap = L.map('gcMiniMap', { attributionControl:false }).setView(center, gcLat != null ? 15 : 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(gcMiniMap);
+  gcMiniMap.on('click', e => {
+    gcLat = e.latlng.lat; gcLon = e.latlng.lng;
+    document.getElementById('gcCoordLbl').textContent = gcLat.toFixed(5)+', '+gcLon.toFixed(5);
+    gcAtualizarCirculo();
+  });
+  if (gcLat != null) gcAtualizarCirculo();
+  setTimeout(() => gcMiniMap && gcMiniMap.invalidateSize(), 150);
+}
+
+function gcAtualizarCirculo() {
+  if (!gcMiniMap || gcLat == null) return;
+  const raio = parseInt(document.getElementById('gcRaio').value);
+  if (gcMiniMarker) gcMiniMap.removeLayer(gcMiniMarker);
+  if (gcMiniCircle) gcMiniMap.removeLayer(gcMiniCircle);
+  gcMiniMarker = L.marker([gcLat, gcLon]).addTo(gcMiniMap);
+  gcMiniCircle = L.circle([gcLat, gcLon], { radius: raio, color:'#D91A1A', fillColor:'#D91A1A', fillOpacity:0.15 }).addTo(gcMiniMap);
+  gcMiniMap.fitBounds(gcMiniCircle.getBounds(), { maxZoom: 16 });
+}
+
+async function saveGeocerca() {
+  const nome = document.getElementById('gcNome').value.trim();
+  const veiculo_id = document.getElementById('gcVeiculo').value || null;
+  const raio_m = parseInt(document.getElementById('gcRaio').value);
+  if (!nome) return toast('Nome é obrigatório','err');
+  if (gcLat == null) return toast('Escolha o centro da área no mapa','err');
+  const body = { nome, latitude: gcLat, longitude: gcLon, raio_m, veiculo_id };
+  try {
+    if (gcEditId) await api('PUT', `/api/geocercas/${gcEditId}`, body);
+    else await api('POST', '/api/geocercas', body);
+    toast('Geocerca salva ✅','ok');
+    closeModal();
+    renderGeocercas(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function deleteGeocerca(id) {
+  try {
+    await api('DELETE', `/api/geocercas/${id}`);
+    toast('Geocerca removida','ok');
+    renderGeocercas(document.getElementById('mainContent'));
   } catch(e) { toast(e.message,'err'); }
 }
 

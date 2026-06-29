@@ -39,6 +39,18 @@ const ALERTA_OFFLINE_MIN = 30; // minutos sem posição nova
 const ALERTA_COOLDOWN_MS = 15 * 60 * 1000; // evita repetir o mesmo alerta a cada 5s
 const ultimoAlerta = new Map(); // `${tipo}:${veiculoId}` -> timestamp do último disparo
 const ultimaPosicaoEm = new Map(); // veiculoId -> timestamp da última posição recebida
+const estadoGeocerca = new Map(); // `${geocercaId}:${veiculoId}` -> 'dentro' | 'fora', pra disparar só na transição
+
+// Distância em metros entre duas coordenadas (fórmula de haversine).
+function distanciaMetros(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad;
+  const dLon = (lon2 - lon1) * rad;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 /* ─── BANCO ─── */
 const pool = new Pool({
@@ -961,6 +973,19 @@ async function initDB() {
     criado_em TIMESTAMP DEFAULT NOW()
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_alertas_eventos_cliente ON alertas_eventos (cliente_id, criado_em DESC)`);
+  // Geocercas (Felogix Track): área circular vigiada; veiculo_id nulo = aplica à frota toda do cliente.
+  await pool.query(`CREATE TABLE IF NOT EXISTS geocercas (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+    veiculo_id INTEGER REFERENCES veiculos(id) ON DELETE CASCADE,
+    nome VARCHAR(100) NOT NULL,
+    latitude DECIMAL(10,8) NOT NULL,
+    longitude DECIMAL(11,8) NOT NULL,
+    raio_m INTEGER NOT NULL,
+    ativo BOOLEAN DEFAULT true,
+    criado_em TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_geocercas_cliente ON geocercas (cliente_id)`);
   await pool.query(`
     INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
     VALUES ('cnpj','54.024.215/0001-00','Impacto Segurança','frota@grupoimpacto.com.br','Frota@123','track',true)
@@ -1515,8 +1540,16 @@ async function avaliarAlertas(posicoesAtuais) {
     const clienteIds = [...new Set(posicoesAtuais.map(p => p.cliente_id))];
     const prefsPorCliente = new Map();
     if (clienteIds.length) {
-      const r = await pool.query('SELECT cliente_id, velocidade, offline FROM alertas_prefs WHERE cliente_id = ANY($1)', [clienteIds]);
+      const r = await pool.query('SELECT cliente_id, velocidade, offline, geocerca FROM alertas_prefs WHERE cliente_id = ANY($1)', [clienteIds]);
       for (const row of r.rows) prefsPorCliente.set(row.cliente_id, row);
+    }
+    const geocercasPorCliente = new Map();
+    if (clienteIds.length) {
+      const r = await pool.query('SELECT * FROM geocercas WHERE cliente_id = ANY($1) AND ativo=true', [clienteIds]);
+      for (const g of r.rows) {
+        if (!geocercasPorCliente.has(g.cliente_id)) geocercasPorCliente.set(g.cliente_id, []);
+        geocercasPorCliente.get(g.cliente_id).push(g);
+      }
     }
 
     const vistosAgora = new Set();
@@ -1527,6 +1560,22 @@ async function avaliarAlertas(posicoesAtuais) {
       if (prefs && prefs.velocidade && pos.velocidade > ALERTA_VELOCIDADE_LIMITE) {
         await dispararAlerta(pos.cliente_id, pos.veiculo_id, 'velocidade',
           `${pos.placa}: velocidade de ${pos.velocidade} km/h (limite ${ALERTA_VELOCIDADE_LIMITE} km/h)`);
+      }
+
+      const geocercas = geocercasPorCliente.get(pos.cliente_id) || [];
+      for (const g of geocercas) {
+        if (g.veiculo_id && g.veiculo_id !== pos.veiculo_id) continue;
+        const chave = `${g.id}:${pos.veiculo_id}`;
+        const dentro = distanciaMetros(pos.lat, pos.lon, parseFloat(g.latitude), parseFloat(g.longitude)) <= g.raio_m;
+        const novoEstado = dentro ? 'dentro' : 'fora';
+        const estadoAnterior = estadoGeocerca.get(chave);
+        estadoGeocerca.set(chave, novoEstado);
+        if (estadoAnterior && estadoAnterior !== novoEstado && prefs && prefs.geocerca) {
+          await dispararAlerta(pos.cliente_id, pos.veiculo_id, 'geocerca',
+            novoEstado === 'dentro'
+              ? `${pos.placa}: entrou na geocerca "${g.nome}"`
+              : `${pos.placa}: saiu da geocerca "${g.nome}"`);
+        }
       }
     }
 
@@ -1882,6 +1931,80 @@ app.get('/api/alertas/eventos', auth, async (req, res) => {
     [req.user.id]
   );
   res.json(r.rows);
+});
+
+/* ─── GEOCERCAS (Felogix Track) ─── */
+app.get('/api/geocercas', auth, async (req, res) => {
+  if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.json([]);
+  const r = await pool.query(
+    `SELECT g.*, v.placa FROM geocercas g LEFT JOIN veiculos v ON v.id = g.veiculo_id
+     WHERE g.cliente_id=$1 ORDER BY g.criado_em DESC`,
+    [req.user.id]
+  );
+  res.json(r.rows);
+});
+
+app.post('/api/geocercas', auth, async (req, res) => {
+  if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const { nome, latitude, longitude, raio_m, veiculo_id } = req.body;
+  const lat = parseFloat(latitude), lon = parseFloat(longitude), raio = parseInt(raio_m);
+  if (!nome || typeof nome !== 'string' || !nome.trim()) return res.status(400).json({ erro: 'Nome obrigatório' });
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) return res.status(400).json({ erro: 'Latitude inválida' });
+  if (!Number.isFinite(lon) || lon < -180 || lon > 180) return res.status(400).json({ erro: 'Longitude inválida' });
+  if (!Number.isInteger(raio) || raio < 50 || raio > 50000) return res.status(400).json({ erro: 'Raio deve ser entre 50 e 50000 metros' });
+  let veiculoId = null;
+  if (veiculo_id) {
+    const v = await pool.query('SELECT id FROM veiculos WHERE id=$1 AND cliente_id=$2', [parseInt(veiculo_id), req.user.id]);
+    if (!v.rows.length) return res.status(404).json({ erro: 'Veículo não encontrado' });
+    veiculoId = v.rows[0].id;
+  }
+  try {
+    const r = await pool.query(
+      `INSERT INTO geocercas (cliente_id, veiculo_id, nome, latitude, longitude, raio_m) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [req.user.id, veiculoId, nome.trim(), lat, lon, raio]
+    );
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.put('/api/geocercas/:id', auth, async (req, res) => {
+  if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const atual = await pool.query('SELECT cliente_id FROM geocercas WHERE id=$1', [id]);
+  if (!atual.rows.length) return res.status(404).json({ erro: 'Geocerca não encontrada' });
+  if (atual.rows[0].cliente_id !== req.user.id) return res.status(403).json({ erro: 'Sem permissão para esta geocerca' });
+
+  const { nome, latitude, longitude, raio_m, veiculo_id, ativo } = req.body;
+  const lat = parseFloat(latitude), lon = parseFloat(longitude), raio = parseInt(raio_m);
+  if (!nome || typeof nome !== 'string' || !nome.trim()) return res.status(400).json({ erro: 'Nome obrigatório' });
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) return res.status(400).json({ erro: 'Latitude inválida' });
+  if (!Number.isFinite(lon) || lon < -180 || lon > 180) return res.status(400).json({ erro: 'Longitude inválida' });
+  if (!Number.isInteger(raio) || raio < 50 || raio > 50000) return res.status(400).json({ erro: 'Raio deve ser entre 50 e 50000 metros' });
+  let veiculoId = null;
+  if (veiculo_id) {
+    const v = await pool.query('SELECT id FROM veiculos WHERE id=$1 AND cliente_id=$2', [parseInt(veiculo_id), req.user.id]);
+    if (!v.rows.length) return res.status(404).json({ erro: 'Veículo não encontrado' });
+    veiculoId = v.rows[0].id;
+  }
+  try {
+    const r = await pool.query(
+      `UPDATE geocercas SET nome=$1, latitude=$2, longitude=$3, raio_m=$4, veiculo_id=$5, ativo=$6 WHERE id=$7 RETURNING *`,
+      [nome.trim(), lat, lon, raio, veiculoId, ativo !== false, id]
+    );
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.delete('/api/geocercas/:id', auth, async (req, res) => {
+  if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const atual = await pool.query('SELECT cliente_id FROM geocercas WHERE id=$1', [id]);
+  if (!atual.rows.length) return res.status(404).json({ erro: 'Geocerca não encontrada' });
+  if (atual.rows[0].cliente_id !== req.user.id) return res.status(403).json({ erro: 'Sem permissão para esta geocerca' });
+  await pool.query('DELETE FROM geocercas WHERE id=$1', [id]);
+  res.json({ ok: true });
 });
 
 /* ─── FINANCEIRO ─── */

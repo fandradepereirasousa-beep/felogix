@@ -113,6 +113,138 @@ app.use((req, res, next) => {
   next();
 });
 
+/* ─── IDENTIDADE VISUAL FELOGIX — compartilhada por todos os produtos ─── */
+const FAVICON_HREF = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 72 72'%3E%3Crect width='72' height='72' fill='%230C0C0C'/%3E%3Cpolygon points='4,4 20,4 68,68 52,68' fill='%23D91A1A'/%3E%3Cpolygon points='52,4 68,4 20,68 4,68' fill='%23D91A1A'/%3E%3Cpolygon points='36,28 44,36 36,44 28,36' fill='%230C0C0C'/%3E%3C/svg%3E";
+
+function logoSvg(tam) {
+  return `<svg width="${tam}" height="${tam}" viewBox="0 0 72 72" fill="none"><polygon points="4,4 20,4 68,68 52,68" fill="#D91A1A"/><polygon points="52,4 68,4 20,68 4,68" fill="#D91A1A"/><polygon points="36,28 44,36 36,44 28,36" fill="#0C0C0C"/></svg>`;
+}
+
+// CSS comum a todas as páginas públicas (seletora + páginas de produto) —
+// garante mesmo layout/tipografia em todo o ecossistema (cor de destaque é
+// definida por página, via produto.cor).
+const CSS_BASE = `
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Segoe UI',Arial,sans-serif; background:#0C0C0C; color:#fff; min-height:100vh; }
+.topo { display:flex; align-items:center; justify-content:space-between; padding:18px 32px; border-bottom:1px solid #1f1f1f; flex-wrap:wrap; gap:14px; }
+.topo-logo { display:flex; align-items:center; gap:10px; text-decoration:none; color:#fff; font-weight:900; font-size:17px; letter-spacing:-.5px; }
+.topo-nav { display:flex; gap:22px; flex-wrap:wrap; }
+.topo-nav a { color:#9a9a9a; text-decoration:none; font-size:13px; font-weight:600; padding:6px 2px; border-bottom:2px solid transparent; }
+.topo-nav a:hover { color:#fff; }
+footer.rodape { text-align:center; padding:32px 20px 48px; color:#555; font-size:12px; }
+footer.rodape a { color:#777; text-decoration:underline; }
+@media (max-width:640px) { .topo { padding:14px 18px; justify-content:center; } .topo-nav { justify-content:center; } }
+`;
+
+// Catálogo único de produtos do ecossistema Felogix. Adicionar um novo
+// produto no futuro é só inserir um objeto aqui — rota, página de produto e
+// nav entre produtos saem automaticamente, sem alterar a estrutura principal.
+const PRODUTOS = [
+  {
+    slug: 'track',
+    nome: 'Felogix Track',
+    tagline: 'Rastreamento veicular em tempo real',
+    icone: '🚗',
+    cor: '#D91A1A',
+    status: 'disponivel',
+    appHref: '/track',
+    descricao: 'Monitore seus veículos em tempo real, com bloqueio remoto de ignição, histórico de trajetos e alertas inteligentes de velocidade e conexão.',
+    funcionalidades: [
+      'Rastreamento em tempo real no mapa, com histórico de trajetos',
+      'Bloqueio e desbloqueio remoto de ignição via hardware GPS',
+      'Alertas de velocidade e de veículo offline',
+      'Perfil pessoal (CPF) ou empresarial (CNPJ) com hierarquia de colaboradores',
+      'Painel web responsivo, acesso de qualquer lugar'
+    ],
+    beneficios: [
+      'Recupere o veículo rapidamente em caso de roubo ou furto',
+      'Reduza custos de combustível e manutenção com dados reais de uso',
+      'Tenha visibilidade total da frota ou do veículo pessoal',
+      'Aumente a segurança de motoristas e cargas'
+    ]
+  },
+  {
+    slug: 'fleet',
+    nome: 'Felogix Fleet',
+    tagline: 'Gestão completa de frotas',
+    icone: '🚚',
+    cor: '#2D6CDF',
+    status: 'em-breve',
+    appHref: null,
+    descricao: 'O cérebro operacional e financeiro da sua frota: checklist digital, controle de manutenção, quilometragem e compliance em um só painel.',
+    funcionalidades: [
+      'Checklist veicular digital pré e pós-viagem',
+      'Controle de quilometragem, consumo e desgaste',
+      'Plano de manutenção preventiva e corretiva por KM ou tempo',
+      'Gestão financeira: multas, sinistros e vencimentos (CRLV, seguro, ANTT)',
+      'Integração nativa com o rastreamento do Felogix Track'
+    ],
+    beneficios: [
+      'Reduza custos operacionais com manutenção e combustível',
+      'Evite multas e problemas de documentação',
+      'Centralize a gestão de toda a frota em um só painel',
+      'Tome decisões com base em dados reais de uso dos veículos'
+    ]
+  },
+  {
+    slug: 'connect',
+    nome: 'Felogix Connect',
+    tagline: 'Localização compartilhada entre pessoas e equipes',
+    icone: '📍',
+    cor: '#1FAE6B',
+    status: 'em-breve',
+    appHref: null,
+    descricao: 'Compartilhamento de localização em tempo real entre família, amigos e equipes — sem precisar de hardware, direto do GPS do smartphone.',
+    funcionalidades: [
+      'Criação de círculos e grupos privados de localização',
+      'Convite por link ou código de acesso',
+      'Localização em tempo real direto do smartphone, sem hardware',
+      'Espelhamento cruzado entre os membros do grupo',
+      'Acesso individual por senha, sem expor dados a quem não faz parte do grupo'
+    ],
+    beneficios: [
+      'Saiba que sua família ou equipe está segura, em tempo real',
+      'Sem custo de equipamento — funciona com o celular de cada pessoa',
+      'Privacidade por grupo: só quem você convidar vê sua localização',
+      'Ideal para famílias, times de entrega e equipes externas'
+    ]
+  },
+  {
+    slug: 'patrol',
+    nome: 'Felogix Patrol',
+    tagline: 'Rondas, checklists e auditoria de segurança patrimonial',
+    icone: '🛡️',
+    cor: '#6B21D9',
+    status: 'em-breve',
+    appHref: null,
+    descricao: 'Sistema de auditoria e controle operacional para vigilantes e supervisores, com rastreamento de plantão, validação de pontos de ronda e relatórios de fechamento.',
+    funcionalidades: [
+      'Check-in e check-out de plantão com validação de localização',
+      'Rastreamento contínuo do trajeto durante a ronda',
+      'Validação de pontos de interesse por QR Code, foto ou geocerca',
+      'Registro de pausas e ocorrências com foto',
+      'Relatório de fechamento de plantão em PDF'
+    ],
+    beneficios: [
+      'Auditoria completa de cada plantão',
+      'Reduza fraudes e aumente a produtividade da equipe de segurança',
+      'Visibilidade total das rondas em tempo real',
+      'Histórico documentado de ocorrências e passagens'
+    ]
+  }
+];
+
+function navProdutos(slugAtual) {
+  return PRODUTOS.map(p => `<a href="/produtos/${p.slug}" style="${p.slug === slugAtual ? `color:${p.cor};border-color:${p.cor}` : ''}">${p.nome.replace('Felogix ', '')}</a>`).join('');
+}
+
+function topoFelogix(slugAtual) {
+  return `<header class="topo">
+    <a href="/" class="topo-logo">${logoSvg(26)} FEL<span style="color:#D91A1A">O</span>GIX</a>
+    <nav class="topo-nav">${navProdutos(slugAtual)}</nav>
+  </header>`;
+}
+
 /* ─── PÁGINA SELETORA (felogix.com.br) ─── */
 function paginaSeletora() {
   return `<!DOCTYPE html>
@@ -121,57 +253,42 @@ function paginaSeletora() {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0C0C0C"/>
-  <title>Felogix</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 72 72'%3E%3Crect width='72' height='72' fill='%230C0C0C'/%3E%3Cpolygon points='4,4 20,4 68,68 52,68' fill='%23D91A1A'/%3E%3Cpolygon points='52,4 68,4 20,68 4,68' fill='%23D91A1A'/%3E%3Cpolygon points='36,28 44,36 36,44 28,36' fill='%230C0C0C'/%3E%3C/svg%3E"/>
+  <title>Felogix — Tecnologia para rastreamento, frotas, localização e segurança</title>
+  <link rel="icon" href="${FAVICON_HREF}"/>
   <style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    body { font-family:'Segoe UI',Arial,sans-serif; background:#0C0C0C; color:#fff; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:32px 16px; }
-    .logo { width:56px; height:56px; margin-bottom:18px; }
-    h1 { font-size:22px; font-weight:600; margin-bottom:6px; letter-spacing:.3px; }
-    .sub { color:#9a9a9a; font-size:14px; margin-bottom:36px; text-align:center; }
-    .grid { display:flex; flex-wrap:wrap; gap:18px; justify-content:center; max-width:900px; width:100%; }
-    .card { background:#171717; border:1px solid #262626; border-radius:14px; padding:26px 22px; width:240px; text-decoration:none; color:#fff; transition:border-color .15s,transform .15s; }
-    a.card:hover { border-color:#D91A1A; transform:translateY(-2px); }
-    .card.disabled { opacity:.55; cursor:default; }
-    .card-ic { font-size:32px; margin-bottom:14px; }
-    .card-t { font-size:17px; font-weight:600; margin-bottom:6px; }
-    .card-d { font-size:13px; color:#9a9a9a; line-height:1.4; }
-    .badge { display:inline-block; margin-top:12px; font-size:11px; padding:3px 9px; border-radius:20px; background:#2a2a2a; color:#9a9a9a; }
+    ${CSS_BASE}
+    .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:64px 20px 52px; }
+    .hero .logo-grande { margin-bottom:20px; }
+    h1 { font-size:26px; font-weight:700; max-width:640px; line-height:1.35; margin-bottom:14px; }
+    .sub { color:#9a9a9a; font-size:15px; max-width:540px; line-height:1.55; }
+    .grid { display:flex; flex-wrap:wrap; gap:18px; justify-content:center; max-width:980px; width:100%; margin:0 auto; padding:0 20px 64px; }
+    .card { background:#141414; border:1px solid #232323; border-top:3px solid #444; border-radius:14px; padding:26px 22px; width:225px; text-decoration:none; color:#fff; transition:border-color .15s,transform .15s; display:block; }
+    .card:hover { transform:translateY(-3px); }
+    .card-ic { font-size:30px; margin-bottom:14px; }
+    .card-t { font-size:16px; font-weight:700; margin-bottom:6px; }
+    .card-d { font-size:13px; color:#9a9a9a; line-height:1.45; min-height:50px; }
+    .badge { display:inline-block; margin-top:14px; font-size:11px; font-weight:600; padding:3px 9px; border-radius:20px; background:#222; color:#9a9a9a; }
     .badge.live { background:#1b3a1f; color:#5ed16a; }
-    footer { margin-top:48px; color:#666; font-size:12px; }
+    @media (max-width:640px) { .hero { padding:48px 18px 40px; } h1 { font-size:21px; } }
   </style>
 </head>
 <body>
-  <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72"><rect width="72" height="72" fill="#0C0C0C" rx="14"/><polygon points="4,4 20,4 68,68 52,68" fill="#D91A1A"/><polygon points="52,4 68,4 20,68 4,68" fill="#D91A1A"/><polygon points="36,28 44,36 36,44 28,36" fill="#0C0C0C"/></svg>
-  <h1>Felogix</h1>
-  <div class="sub">Escolha a plataforma</div>
+  ${topoFelogix(null)}
+  <section class="hero">
+    <div class="logo-grande">${logoSvg(56)}</div>
+    <h1>A Felogix é a tecnologia por trás do rastreamento, da gestão de frotas, da localização compartilhada e da segurança patrimonial.</h1>
+    <div class="sub">Um único ecossistema, quatro produtos especializados — escolha o seu abaixo.</div>
+  </section>
   <div class="grid">
-    <a class="card" href="/track">
-      <div class="card-ic">🚗</div>
-      <div class="card-t">Felogix Track</div>
-      <div class="card-d">Rastreador e bloqueador veicular em tempo real.</div>
-      <span class="badge live">Disponível</span>
-    </a>
-    <div class="card disabled">
-      <div class="card-ic">🚚</div>
-      <div class="card-t">Felogix Fleet</div>
-      <div class="card-d">Gestão de frotas para empresas.</div>
-      <span class="badge">Em breve</span>
-    </div>
-    <div class="card disabled">
-      <div class="card-ic">📍</div>
-      <div class="card-t">Felogix Connect</div>
-      <div class="card-d">Compartilhamento de localização entre família, amigos e equipes.</div>
-      <span class="badge">Em breve</span>
-    </div>
-    <div class="card disabled">
-      <div class="card-ic">🛡️</div>
-      <div class="card-t">Felogix Patrol</div>
-      <div class="card-d">Rondas, checklists e auditoria para segurança patrimonial.</div>
-      <span class="badge">Em breve</span>
-    </div>
+    ${PRODUTOS.map(p => `
+    <a class="card" style="border-top-color:${p.cor}" href="/produtos/${p.slug}">
+      <div class="card-ic">${p.icone}</div>
+      <div class="card-t">${p.nome}</div>
+      <div class="card-d">${p.tagline}</div>
+      <span class="badge ${p.status === 'disponivel' ? 'live' : ''}">${p.status === 'disponivel' ? 'Disponível' : 'Em breve'}</span>
+    </a>`).join('')}
   </div>
-  <footer>Felogix © ${new Date().getFullYear()}</footer>
+  <footer class="rodape">Felogix © ${new Date().getFullYear()}</footer>
 </body>
 </html>`;
 }
@@ -203,11 +320,75 @@ function paginaEmConstrucao(nome, desc) {
 </html>`;
 }
 
+/* ─── PÁGINA DE PRODUTO (genérica — reusada por todos os produtos) ─── */
+function paginaProduto(produto) {
+  const disponivel = produto.status === 'disponivel';
+  const nomeCurto = produto.nome.replace('Felogix ', '');
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0C0C0C"/>
+  <title>${produto.nome} - Felogix</title>
+  <link rel="icon" href="${FAVICON_HREF}"/>
+  <style>
+    ${CSS_BASE}
+    main { max-width:720px; margin:0 auto; padding:64px 24px 40px; }
+    .tag { display:inline-block; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:${produto.cor}; margin-bottom:18px; }
+    .hero-ic { font-size:44px; margin-bottom:18px; }
+    h1 { font-size:30px; font-weight:800; margin-bottom:8px; letter-spacing:-.5px; }
+    .tagline { font-size:16px; color:#bbb; margin-bottom:18px; }
+    .descricao { font-size:15px; color:#9a9a9a; line-height:1.6; max-width:600px; margin-bottom:40px; }
+    .secao { margin-bottom:36px; }
+    .secao h2 { font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; color:${produto.cor}; margin-bottom:14px; }
+    ul.lista { list-style:none; display:flex; flex-direction:column; gap:11px; }
+    ul.lista li { font-size:14px; color:#ddd; padding-left:22px; position:relative; line-height:1.5; }
+    ul.lista li::before { content:'✓'; position:absolute; left:0; color:${produto.cor}; font-weight:700; }
+    .cta { margin-top:8px; }
+    .btn { display:inline-block; padding:13px 28px; border-radius:8px; font-size:14px; font-weight:700; text-decoration:none; }
+    .btn-on { background:${produto.cor}; color:#fff; }
+    .btn-off { background:#1a1a1a; color:#777; border:1px solid #2a2a2a; }
+    @media (max-width:640px) { main { padding:40px 18px 30px; } h1 { font-size:24px; } }
+  </style>
+</head>
+<body>
+  ${topoFelogix(produto.slug)}
+  <main>
+    <div class="hero-ic">${produto.icone}</div>
+    <span class="tag">Felogix ${nomeCurto}</span>
+    <h1>${produto.nome}</h1>
+    <div class="tagline">${produto.tagline}</div>
+    <p class="descricao">${produto.descricao}</p>
+    <div class="secao">
+      <h2>Principais funcionalidades</h2>
+      <ul class="lista">${produto.funcionalidades.map(f => `<li>${f}</li>`).join('')}</ul>
+    </div>
+    <div class="secao">
+      <h2>Benefícios</h2>
+      <ul class="lista">${produto.beneficios.map(b => `<li>${b}</li>`).join('')}</ul>
+    </div>
+    <div class="cta">
+      ${disponivel
+        ? `<a href="${produto.appHref}" class="btn btn-on">Acessar sistema →</a>`
+        : `<span class="btn btn-off">Em breve</span>`}
+    </div>
+  </main>
+  <footer class="rodape">Felogix © ${new Date().getFullYear()} — <a href="/">voltar para a página inicial</a></footer>
+</body>
+</html>`;
+}
+
 app.get('/', (req, res) => res.send(paginaSeletora()));
 app.get('/track', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.get('/fleet', (req, res) => res.send(paginaEmConstrucao('Felogix Fleet', 'Gestão completa de frotas para empresas.')));
-app.get('/connect', (req, res) => res.send(paginaEmConstrucao('Felogix Connect', 'Compartilhamento de localização entre família, amigos e equipes.')));
-app.get('/patrol', (req, res) => res.send(paginaEmConstrucao('Felogix Patrol', 'Rondas, checklists e auditoria para segurança patrimonial.')));
+app.get('/produtos/:slug', (req, res) => {
+  const produto = PRODUTOS.find(p => p.slug === req.params.slug);
+  if (!produto) return res.status(404).send(paginaEmConstrucao('Página não encontrada', 'O produto que você procura não existe.'));
+  res.send(paginaProduto(produto));
+});
+app.get('/fleet', (req, res) => res.redirect('/produtos/fleet'));
+app.get('/connect', (req, res) => res.redirect('/produtos/connect'));
+app.get('/patrol', (req, res) => res.redirect('/produtos/patrol'));
 
 app.use(express.static(path.join(__dirname, 'public')));
 

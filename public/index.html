@@ -506,6 +506,7 @@ function buildNav() {
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
     {ic:'📱',lbl:'Equipe em campo',id:'compartilhamentos'},
     {ic:'📍',lbl:'Pontos de ronda',id:'pontosronda'},
+    {ic:'🕒',lbl:'Plantões',id:'plantoes'},
   ];
   if (APP_MODE === 'fleet') colaboradorTabs.push({ic:'✅',lbl:'Checklist',id:'checklist'});
 
@@ -546,6 +547,7 @@ function goTab(id, el) {
     geocercas:  () => renderGeocercas(c),
     checklist:  () => renderChecklist(c),
     pontosronda: () => renderPontosRonda(c),
+    plantoes:   () => renderPlantoes(c),
   };
   if (map_[id]) map_[id]();
 }
@@ -1840,6 +1842,60 @@ async function verQrPonto(id) {
         <button class="mbtn sec" style="margin-top:14px" onclick="window.open('${r.imagem}','_blank')">🖨️ Abrir para impressão</button>
       </div>`;
   } catch(e) { document.getElementById('mBody').innerHTML = `<div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div>`; }
+}
+
+async function renderPlantoes(c) {
+  c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
+  try {
+    const plantoes = await api('GET','/api/patrol/plantoes');
+    c.innerHTML = `<div class="pp">
+      <div class="sec-title">Plantões <span style="color:var(--t2);font-size:11px;font-weight:400">${plantoes.length}</span></div>
+      <div style="font-size:12px;color:var(--t2);margin-bottom:14px;padding:12px;background:var(--s2);border-radius:8px">
+        🕒 O vigilante inicia e fecha o plantão pelo próprio link de rastreamento. O relatório em PDF fica disponível aqui após o fechamento.
+      </div>
+      ${!plantoes.length ? `<div class="empty"><div class="ei">🕒</div><div class="et">Nenhum plantão registrado ainda</div><div class="es">Os plantões aparecem aqui assim que um vigilante iniciar o turno pelo link pessoal</div></div>` :
+        plantoes.map(p => {
+          const inicio = new Date(p.inicio);
+          const fim = p.fim ? new Date(p.fim) : null;
+          const fmtData = d => d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
+          const total = parseInt(p.total_checkins);
+          const noPonto = parseInt(p.checkins_no_ponto);
+          const taxa = total ? Math.round((noPonto/total)*100) : null;
+          const aberto = p.status === 'aberto';
+          return `<div class="card">
+            <div class="card-top">
+              <span style="font-size:18px">${aberto ? '🟢' : '✅'}</span>
+              <div class="card-info">
+                <div class="card-title">${p.vigilante_nome || 'Vigilante'}</div>
+                <div class="card-sub">${fmtData(inicio)} ${fim ? '→ '+fmtData(fim) : '(em andamento)'}</div>
+              </div>
+              <span class="badge badge-${aberto?'amber':'green'}">${aberto?'Em andamento':'Fechado'}</span>
+            </div>
+            <div style="font-size:12px;color:var(--t2);margin:8px 0 0">
+              ${total} passage${total===1?'m':'ns'} registrada${total===1?'':'s'}${taxa!=null ? ' · Taxa de eficiência: '+taxa+'%' : ''}
+            </div>
+            ${!aberto ? `<div class="acts-row"><div class="act-btn blue" onclick="baixarPlantaoPdf(${p.id})">📄 Baixar relatório PDF</div></div>` : ''}
+          </div>`;
+        }).join('')}
+    </div>`;
+  } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+async function baixarPlantaoPdf(id) {
+  toast('Gerando PDF…','ok');
+  try {
+    const r = await fetchComTimeout(API + `/api/patrol/plantoes/${id}/pdf`, { headers: { 'Authorization': 'Bearer ' + TOKEN } }, 20000);
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.erro || 'Erro ao gerar PDF');
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `plantao-${id}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch(e) { toast(e.message,'err'); }
 }
 
 /* ─── FINANCEIRO ─── */

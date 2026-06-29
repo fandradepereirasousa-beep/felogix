@@ -142,9 +142,16 @@ automático no item A).
   presença automaticamente usando o token salvo em `localStorage` ao abrir o
   link pessoal pelo menos uma vez no mesmo aparelho — sem e-mail/SMS automático
 - ✅ Histórico de check-ins por ponto, distinguindo tipo (`geocerca`/`qrcode`)
+- ✅ Início/fechamento de plantão pelo próprio link pessoal (`/track/:token`):
+  um vigilante só pode ter um plantão aberto por vez; fechamento marca
+  horário de fim e libera o relatório
+- ✅ Relatório de fechamento de plantão em PDF (`pdfkit`): identificação do
+  vigilante, duração, taxa de eficiência (passagens no raio / total) e linha
+  do tempo de passagens — disponível **apenas para download manual no painel
+  do gestor**, sem envio automático por e-mail, conforme a política
+  registrada no item A
 - ❌ Check-in por foto (antifraude) do ponto de interesse
-- ❌ Início/fechamento de plantão, pausas com/sem foto, perfil Supervisor,
-  relatório de fechamento em PDF — nada disso implementado ainda
+- ❌ Pausas com/sem foto, perfil Supervisor — ainda não implementado
 
 ---
 

@@ -13,6 +13,7 @@ const http       = require('http');
 const WebSocket  = require('ws');
 const multer     = require('multer');
 const QRCode     = require('qrcode');
+const PDFDocument = require('pdfkit');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -1061,6 +1062,22 @@ async function initDB() {
   for (const { id } of pontosSemQr.rows) {
     await pool.query(`UPDATE patrol_pontos SET qr_codigo=$1 WHERE id=$2`, [crypto.randomBytes(6).toString('hex'), id]);
   }
+  // Plantão (turno) do vigilante: início/fim para delimitar a janela do relatório de fechamento
+  await pool.query(`CREATE TABLE IF NOT EXISTS patrol_plantoes (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+    compartilhamento_id INTEGER REFERENCES rastreadores_compartilhados(id) ON DELETE CASCADE,
+    inicio TIMESTAMP NOT NULL DEFAULT NOW(),
+    fim TIMESTAMP,
+    latitude_inicio DECIMAL(10,8),
+    longitude_inicio DECIMAL(11,8),
+    latitude_fim DECIMAL(10,8),
+    longitude_fim DECIMAL(11,8),
+    status VARCHAR(10) NOT NULL DEFAULT 'aberto',
+    criado_em TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_patrol_plantoes_comp ON patrol_plantoes (compartilhamento_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_patrol_plantoes_cliente ON patrol_plantoes (cliente_id, inicio DESC)`);
   // Conta de teste (gestor) — visualizar Track/Connect/Fleet/Patrol como cliente, sem usar o login admin
   // (precisa existir ANTES do seed de itens de checklist abaixo, para já nascer com o template padrão)
   await pool.query(
@@ -1660,6 +1677,100 @@ app.get('/api/patrol/checkins', auth, async (req, res) => {
     [pontoId]
   );
   res.json(r.rows);
+});
+
+/* ─── PATROL: plantões (início/fim de turno) e relatório de fechamento ─── */
+app.get('/api/patrol/plantoes', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  let clienteId;
+  if (req.user.role === 'admin') {
+    clienteId = parseInt(req.query.cliente_id);
+    if (!clienteId) return res.status(400).json({ erro: 'cliente_id é obrigatório' });
+  } else {
+    clienteId = req.user.id;
+  }
+  const r = await pool.query(
+    `SELECT pl.*, rc.nome AS vigilante_nome,
+       (SELECT COUNT(*) FROM patrol_checkins ck WHERE ck.compartilhamento_id=pl.compartilhamento_id
+         AND ck.criado_em BETWEEN pl.inicio AND COALESCE(pl.fim, NOW())) AS total_checkins,
+       (SELECT COUNT(*) FROM patrol_checkins ck WHERE ck.compartilhamento_id=pl.compartilhamento_id
+         AND ck.dentro_raio=true AND ck.criado_em BETWEEN pl.inicio AND COALESCE(pl.fim, NOW())) AS checkins_no_ponto
+     FROM patrol_plantoes pl
+     JOIN rastreadores_compartilhados rc ON rc.id = pl.compartilhamento_id
+     WHERE pl.cliente_id=$1
+     ORDER BY pl.inicio DESC LIMIT 100`,
+    [clienteId]
+  );
+  res.json(r.rows);
+});
+
+app.get('/api/patrol/plantoes/:id/pdf', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const r = await pool.query(
+    `SELECT pl.*, rc.nome AS vigilante_nome, rc.telefone AS vigilante_telefone
+     FROM patrol_plantoes pl JOIN rastreadores_compartilhados rc ON rc.id = pl.compartilhamento_id
+     WHERE pl.id=$1`,
+    [id]
+  );
+  if (!r.rows.length) return res.status(404).json({ erro: 'Plantão não encontrado' });
+  const plantao = r.rows[0];
+  if (req.user.role !== 'admin' && plantao.cliente_id !== req.user.id)
+    return res.status(403).json({ erro: 'Sem permissão para este plantão' });
+  if (plantao.status !== 'fechado')
+    return res.status(400).json({ erro: 'Plantão ainda em andamento — o relatório fica disponível após o fechamento' });
+
+  try {
+    const checkinsR = await pool.query(
+      `SELECT ck.*, pp.nome AS ponto_nome FROM patrol_checkins ck
+       JOIN patrol_pontos pp ON pp.id = ck.ponto_id
+       WHERE ck.compartilhamento_id=$1 AND ck.criado_em BETWEEN $2 AND $3
+       ORDER BY ck.criado_em ASC`,
+      [plantao.compartilhamento_id, plantao.inicio, plantao.fim]
+    );
+    const checkins = checkinsR.rows;
+    const total = checkins.length;
+    const noPonto = checkins.filter(c => c.dentro_raio).length;
+    const taxa = total ? Math.round((noPonto / total) * 100) : null;
+    const duracaoMin = Math.round((new Date(plantao.fim) - new Date(plantao.inicio)) / 60000);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="plantao-${id}.pdf"`);
+    const doc = new PDFDocument({ margin: 50 });
+    doc.pipe(res);
+
+    doc.fontSize(18).fillColor('#6B21D9').text('Felogix Patrol — Relatório de Fechamento de Plantão');
+    doc.moveDown(0.8);
+    doc.fontSize(11).fillColor('#000');
+    doc.text(`Vigilante: ${plantao.vigilante_nome}`);
+    if (plantao.vigilante_telefone) doc.text(`Telefone: ${plantao.vigilante_telefone}`);
+    doc.text(`Início do plantão: ${new Date(plantao.inicio).toLocaleString('pt-BR')}`);
+    doc.text(`Fim do plantão: ${new Date(plantao.fim).toLocaleString('pt-BR')}`);
+    doc.text(`Duração: ${Math.floor(duracaoMin / 60)}h${String(duracaoMin % 60).padStart(2, '0')}min`);
+    doc.text(`Total de passagens registradas: ${total}`);
+    doc.text(`Taxa de eficiência: ${taxa != null ? taxa + '%' : 'N/A (sem passagens)'}`);
+    doc.moveDown(1);
+
+    doc.fontSize(13).fillColor('#6B21D9').text('Linha do tempo de passagens');
+    doc.moveDown(0.3);
+    doc.fontSize(10).fillColor('#000');
+    if (!total) {
+      doc.text('Nenhuma passagem registrada durante este plantão.');
+    } else {
+      checkins.forEach(c => {
+        const hora = new Date(c.criado_em).toLocaleString('pt-BR');
+        const tipo = c.tipo === 'qrcode' ? 'QR Code' : 'GPS/Geocerca';
+        const status = c.dentro_raio ? 'No ponto' : 'Fora do raio';
+        doc.text(`${hora}  ·  ${c.ponto_nome}  ·  ${tipo}  ·  ${status}`);
+      });
+    }
+    doc.moveDown(1.5);
+    doc.fontSize(8).fillColor('#999').text('Relatório gerado para download manual no painel do gestor. Felogix Patrol.');
+    doc.end();
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ erro: 'Erro ao gerar PDF' });
+  }
 });
 
 /* ─── GRUPOS DE VEÍCULOS (apenas clientes CNPJ) ─── */
@@ -2291,6 +2402,57 @@ app.post('/api/track/:token/checkin-qr', async (req, res) => {
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
+app.get('/api/track/:token/plantao/atual', async (req, res) => {
+  try {
+    const own = await pool.query('SELECT id FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    if (!own.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
+    const r = await pool.query(
+      `SELECT * FROM patrol_plantoes WHERE compartilhamento_id=$1 AND status='aberto' ORDER BY inicio DESC LIMIT 1`,
+      [own.rows[0].id]
+    );
+    res.json({ aberto: !!r.rows.length, plantao: r.rows[0] || null });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.post('/api/track/:token/plantao/iniciar', async (req, res) => {
+  const { latitude, longitude } = req.body;
+  const lat = parseFloat(latitude), lon = parseFloat(longitude);
+  try {
+    const own = await pool.query('SELECT id, cliente_id FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    if (!own.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
+    const aberto = await pool.query(
+      `SELECT id FROM patrol_plantoes WHERE compartilhamento_id=$1 AND status='aberto'`,
+      [own.rows[0].id]
+    );
+    if (aberto.rows.length) return res.status(409).json({ erro: 'Já existe um plantão em andamento' });
+    const r = await pool.query(
+      `INSERT INTO patrol_plantoes (cliente_id,compartilhamento_id,latitude_inicio,longitude_inicio)
+       VALUES ($1,$2,$3,$4) RETURNING *`,
+      [own.rows[0].cliente_id, own.rows[0].id, Number.isFinite(lat) ? lat : null, Number.isFinite(lon) ? lon : null]
+    );
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.post('/api/track/:token/plantao/fechar', async (req, res) => {
+  const { latitude, longitude } = req.body;
+  const lat = parseFloat(latitude), lon = parseFloat(longitude);
+  try {
+    const own = await pool.query('SELECT id FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    if (!own.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
+    const aberto = await pool.query(
+      `SELECT id FROM patrol_plantoes WHERE compartilhamento_id=$1 AND status='aberto' ORDER BY inicio DESC LIMIT 1`,
+      [own.rows[0].id]
+    );
+    if (!aberto.rows.length) return res.status(404).json({ erro: 'Nenhum plantão em andamento' });
+    const r = await pool.query(
+      `UPDATE patrol_plantoes SET fim=NOW(), latitude_fim=$1, longitude_fim=$2, status='fechado' WHERE id=$3 RETURNING *`,
+      [Number.isFinite(lat) ? lat : null, Number.isFinite(lon) ? lon : null, aberto.rows[0].id]
+    );
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
 /* ─── ALERTAS ─── */
 app.get('/api/alertas', auth, async (req, res) => {
   if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.json({});
@@ -2694,6 +2856,11 @@ app.get('/track/:token', async (req, res) => {
         <div class="groupPanel-head">📍 Pontos de ronda próximos</div>
         <div id="pointsList"></div>
       </div>
+      <div class="groupPanel" id="shiftPanel" style="display:none">
+        <div class="groupPanel-head">🕒 Plantão</div>
+        <div id="shiftStatus" style="margin-bottom:8px;color:#555">Carregando...</div>
+        <button id="btnShift" style="display:none;width:100%" onclick="toggleShift()"></button>
+      </div>
     </div>
     <div id="map"></div>
   </div>
@@ -2756,7 +2923,9 @@ app.get('/track/:token', async (req, res) => {
         const pontos = await resp.json();
         const panel = document.getElementById('pointsPanel');
         const list = document.getElementById('pointsList');
-        if (!Array.isArray(pontos) || !pontos.length) { panel.style.display = 'none'; return; }
+        const temPontos = Array.isArray(pontos) && pontos.length > 0;
+        document.getElementById('shiftPanel').style.display = temPontos ? 'block' : 'none';
+        if (!temPontos) { panel.style.display = 'none'; return; }
         pontos.sort((a, b) => (a.distancia_metros ?? Infinity) - (b.distancia_metros ?? Infinity));
         panel.style.display = 'block';
         list.innerHTML = pontos.map(p => {
@@ -2785,6 +2954,54 @@ app.get('/track/:token', async (req, res) => {
         alert(e.message);
         btn.disabled = false; btn.textContent = '✅ Check-in';
       }
+    }
+
+    let shiftAberto = false;
+    async function loadShiftStatus() {
+      try {
+        const resp = await fetch(\`/api/track/\${TOKEN}/plantao/atual\`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        shiftAberto = !!data.aberto;
+        renderShift(data.plantao);
+      } catch (e) {}
+    }
+
+    function renderShift(plantao) {
+      const btn = document.getElementById('btnShift');
+      const status = document.getElementById('shiftStatus');
+      btn.style.display = 'block';
+      if (shiftAberto && plantao) {
+        const inicio = new Date(plantao.inicio).toLocaleTimeString('pt-BR');
+        status.textContent = '🟢 Em andamento desde ' + inicio;
+        btn.textContent = '⏹ Fechar Plantão';
+        btn.style.background = '#c62828';
+      } else {
+        status.textContent = 'Nenhum plantão em andamento';
+        btn.textContent = '▶ Iniciar Plantão';
+        btn.style.background = '#2e7d32';
+      }
+    }
+
+    async function toggleShift() {
+      const btn = document.getElementById('btnShift');
+      const acao = shiftAberto ? 'fechar' : 'iniciar';
+      if (acao === 'fechar' && !confirm('Confirma o fechamento do plantão? O relatório ficará disponível para o gestor.')) return;
+      btn.disabled = true;
+      try {
+        const resp = await fetch(\`/api/track/\${TOKEN}/plantao/\${acao}\`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ latitude: curLat, longitude: curLon })
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.erro || 'Erro ao processar plantão');
+        shiftAberto = acao === 'iniciar';
+        renderShift(shiftAberto ? data : null);
+        if (acao === 'fechar') alert('Plantão fechado. O relatório fica disponível para download no painel do gestor.');
+      } catch (e) {
+        alert(e.message);
+      } finally { btn.disabled = false; }
     }
 
     async function salvarPerfil() {
@@ -2908,8 +3125,10 @@ app.get('/track/:token', async (req, res) => {
     startTracking();
     loadGrupo();
     loadPontos();
+    loadShiftStatus();
     setInterval(loadGrupo, 15000);
     setInterval(loadPontos, 15000);
+    setInterval(loadShiftStatus, 20000);
   </script>
 </body>
 </html>`);

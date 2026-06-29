@@ -66,8 +66,11 @@ const mailer = nodemailer.createTransport({
   host: 'smtp.gmail.com', port: 587, secure: false,
   auth: {
     user: process.env.MAIL_USER || 'felogix.br@gmail.com',
-    pass: process.env.MAIL_PASS || 'zhqjivqtphsfldoh'
-  }
+    pass: process.env.MAIL_PASS
+  },
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000
 });
 
 /* ─── UPLOAD DE FOTOS (veículos e pessoas/links) ─── */
@@ -183,8 +186,8 @@ const PRODUTOS = [
     tagline: 'Gestão completa de frotas',
     icone: '🚚',
     cor: '#2D6CDF',
-    status: 'em-breve',
-    appHref: null,
+    status: 'disponivel',
+    appHref: '/fleet',
     descricao: 'O cérebro operacional e financeiro da sua frota: checklist digital, controle de manutenção, quilometragem e compliance em um só painel.',
     funcionalidades: [
       'Checklist veicular digital pré e pós-viagem',
@@ -206,8 +209,8 @@ const PRODUTOS = [
     tagline: 'Localização compartilhada entre pessoas e equipes',
     icone: '📍',
     cor: '#1FAE6B',
-    status: 'em-breve',
-    appHref: null,
+    status: 'disponivel',
+    appHref: '/connect',
     descricao: 'Compartilhamento de localização em tempo real entre família, amigos e equipes — sem precisar de hardware, direto do GPS do smartphone.',
     funcionalidades: [
       'Criação de círculos e grupos privados de localização',
@@ -229,8 +232,8 @@ const PRODUTOS = [
     tagline: 'Rondas, checklists e auditoria de segurança patrimonial',
     icone: '🛡️',
     cor: '#6B21D9',
-    status: 'em-breve',
-    appHref: null,
+    status: 'disponivel',
+    appHref: '/patrol',
     descricao: 'Sistema de auditoria e controle operacional para vigilantes e supervisores, com rastreamento de plantão, validação de pontos de ronda e relatórios de fechamento.',
     funcionalidades: [
       'Check-in e check-out de plantão com validação de localização',
@@ -407,9 +410,9 @@ app.get('/produtos/:slug', (req, res) => {
   if (!produto) return res.status(404).send(paginaEmConstrucao('Página não encontrada', 'O produto que você procura não existe.'));
   res.send(paginaProduto(produto));
 });
-app.get('/fleet', (req, res) => res.redirect('/produtos/fleet'));
-app.get('/connect', (req, res) => res.redirect('/produtos/connect'));
-app.get('/patrol', (req, res) => res.redirect('/produtos/patrol'));
+app.get('/fleet', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/connect', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/patrol', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -505,8 +508,12 @@ function wsBroadcastScoped(type, items, clienteIdOf, veiculoIdOf) {
 
 async function sendMail(to, subject, html) {
   try {
-    await mailer.sendMail({ from: '"Felogix" <felogix.br@gmail.com>', to, subject, html });
-  } catch(e) { console.error('Email error:', e.message); }
+    await Promise.race([
+      mailer.sendMail({ from: '"Felogix" <felogix.br@gmail.com>', to, subject, html }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao enviar email')), 12000))
+    ]);
+    return true;
+  } catch(e) { console.error('Email error:', e.message); return false; }
 }
 
 /* ─── INTEGRAÇÃO COM TRACCAR ─── */
@@ -991,6 +998,53 @@ async function initDB() {
     VALUES ('cnpj','54.024.215/0001-00','Impacto Segurança','frota@grupoimpacto.com.br','Frota@123','track',true)
     ON CONFLICT (email) DO NOTHING
   `);
+  // Cadastro de clientes: campos de contato/endereço (Connect/Fleet/Patrol precisam disso no onboarding)
+  try {
+    await pool.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS telefone VARCHAR(20)`);
+  } catch (e) { console.warn('Migração clientes telefone:', e.message); }
+  try {
+    await pool.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS endereco VARCHAR(255)`);
+  } catch (e) { console.warn('Migração clientes endereco:', e.message); }
+  // Felogix Fleet: template de itens de checklist por cliente + execuções por veículo
+  await pool.query(`CREATE TABLE IF NOT EXISTS fleet_checklist_itens (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+    nome VARCHAR(100) NOT NULL,
+    ordem INTEGER DEFAULT 0,
+    ativo BOOLEAN DEFAULT true,
+    criado_em TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fleet_checklist_itens_cliente ON fleet_checklist_itens (cliente_id)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS fleet_checklist_execucoes (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+    veiculo_id INTEGER REFERENCES veiculos(id) ON DELETE CASCADE,
+    executado_por VARCHAR(150),
+    tipo VARCHAR(10) DEFAULT 'pre',
+    itens JSONB NOT NULL,
+    tem_problema BOOLEAN DEFAULT false,
+    criado_em TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_fleet_checklist_exec_veiculo ON fleet_checklist_execucoes (veiculo_id, criado_em DESC)`);
+  // Conta de teste (gestor) — visualizar Track/Connect/Fleet/Patrol como cliente, sem usar o login admin
+  // (precisa existir ANTES do seed de itens de checklist abaixo, para já nascer com o template padrão)
+  await pool.query(
+    `INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
+     VALUES ('cpf','000.000.000-01','Felipe (Teste Gestor)',$1,$2,'cortesia',true)
+     ON CONFLICT (email) DO NOTHING`,
+    ['fandradepereirasousa@gmail.com', ADMIN_PASS]
+  );
+  // Template padrão de checklist (itens comuns de pré/pós-viagem) — cliente pode editar depois
+  await pool.query(`
+    INSERT INTO fleet_checklist_itens (cliente_id, nome, ordem)
+    SELECT c.id, item.nome, item.ordem
+    FROM clientes c
+    CROSS JOIN (VALUES
+      ('Pneus e calibragem',1),('Freios',2),('Óleo e fluidos',3),('Faróis e lanternas',4),
+      ('Cintos de segurança',5),('Documentação (CRLV/seguro)',6),('Limpeza e itens de bordo',7),('Combustível',8)
+    ) AS item(nome, ordem)
+    WHERE NOT EXISTS (SELECT 1 FROM fleet_checklist_itens fi WHERE fi.cliente_id = c.id)
+  `);
   console.log('DB iniciado');
 }
 
@@ -1136,24 +1190,26 @@ app.get('/api/verify-token', auth, async (req, res) => {
 
 /* ─── CLIENTES ─── */
 app.get('/api/clientes', auth, adminOnly, async (req, res) => {
-  const r = await pool.query('SELECT id,tipo,documento,nome,email,plano,valor_plano,cobranca_modo,dia_vencimento,ativo,criado_em FROM clientes ORDER BY criado_em DESC');
+  const r = await pool.query('SELECT id,tipo,documento,nome,email,telefone,endereco,plano,valor_plano,cobranca_modo,dia_vencimento,ativo,criado_em FROM clientes ORDER BY criado_em DESC');
   res.json(r.rows);
 });
 
 app.post('/api/clientes', auth, adminOnly, async (req, res) => {
-  const { tipo, documento, nome, email, plano, valor_plano, cobranca_modo, dia_vencimento } = req.body;
+  const { tipo, documento, nome, email, telefone, endereco, plano, valor_plano, cobranca_modo, dia_vencimento } = req.body;
   if (!documento || !nome || !email) return res.status(400).json({ erro: 'Preencha todos os campos' });
   if (!isEmail(email)) return res.status(400).json({ erro: 'Email inválido' });
   if (!isDoc(documento)) return res.status(400).json({ erro: 'Documento inválido' });
   if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
+  if (telefone && !/^[\d\s()\-+]{8,20}$/.test(telefone)) return res.status(400).json({ erro: 'Telefone inválido' });
+  if (endereco && !isSafe(endereco)) return res.status(400).json({ erro: 'Endereço inválido' });
   const senha = gerarSenha();
   try {
     const modo = plano === 'personalizado' ? (cobranca_modo === 'por_veiculo' ? 'por_veiculo' : 'fixo') : null;
     const r = await pool.query(
-      'INSERT INTO clientes (tipo,documento,nome,email,senha,plano,valor_plano,cobranca_modo,dia_vencimento) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,nome,email,plano',
-      [tipo||'cpf', documento.trim(), nome.trim(), email.trim().toLowerCase(), senha, plano||'cortesia', valor_plano||0, modo, dia_vencimento||10]
+      'INSERT INTO clientes (tipo,documento,nome,email,senha,telefone,endereco,plano,valor_plano,cobranca_modo,dia_vencimento) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id,nome,email,plano',
+      [tipo||'cpf', documento.trim(), nome.trim(), email.trim().toLowerCase(), senha, telefone?.trim()||null, endereco?.trim()||null, plano||'cortesia', valor_plano||0, modo, dia_vencimento||10]
     );
-    await sendMail(email, 'Bem-vindo ao Felogix!',
+    const emailEnviado = await sendMail(email, 'Bem-vindo ao Felogix!',
       `<div style="font-family:sans-serif;max-width:480px;margin:auto">
         <h2 style="color:#D91A1A">Felogix Track</h2>
         <p>Olá, <b>${nome}</b>! Seu acesso foi criado.</p>
@@ -1165,7 +1221,7 @@ app.post('/api/clientes', auth, adminOnly, async (req, res) => {
         <a href="https://felogix.com.br" style="display:inline-block;background:#D91A1A;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold">Acessar plataforma</a>
         <p style="font-size:11px;color:#999;margin-top:16px">Recomendamos alterar sua senha no primeiro acesso.</p>
       </div>`);
-    res.json({ ...r.rows[0], senha_gerada: senha });
+    res.json({ ...r.rows[0], senha_gerada: senha, email_enviado: emailEnviado });
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ erro: 'Email ou documento já cadastrado' });
     res.status(500).json({ erro: 'Erro interno' });
@@ -1175,11 +1231,19 @@ app.post('/api/clientes', auth, adminOnly, async (req, res) => {
 app.put('/api/clientes/:id', auth, adminOnly, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
-  const { nome, email, plano, valor_plano, cobranca_modo, dia_vencimento, ativo, senha } = req.body;
+  const { nome, email, telefone, endereco, plano, valor_plano, cobranca_modo, dia_vencimento, ativo, senha } = req.body;
   try {
     const sets = []; const vals = []; let i = 1;
     if (nome !== undefined && isSafe(nome))           { sets.push(`nome=$${i++}`);           vals.push(nome.trim()); }
     if (email !== undefined && isEmail(email))         { sets.push(`email=$${i++}`);          vals.push(email.trim().toLowerCase()); }
+    if (telefone !== undefined) {
+      if (telefone && !/^[\d\s()\-+]{8,20}$/.test(telefone)) return res.status(400).json({ erro: 'Telefone inválido' });
+      sets.push(`telefone=$${i++}`); vals.push(telefone?.trim() || null);
+    }
+    if (endereco !== undefined) {
+      if (endereco && !isSafe(endereco)) return res.status(400).json({ erro: 'Endereço inválido' });
+      sets.push(`endereco=$${i++}`); vals.push(endereco?.trim() || null);
+    }
     if (plano !== undefined)                           { sets.push(`plano=$${i++}`);          vals.push(plano); }
     if (valor_plano !== undefined)                     { sets.push(`valor_plano=$${i++}`);    vals.push(parseFloat(valor_plano)||0); }
     if (cobranca_modo !== undefined)                   { sets.push(`cobranca_modo=$${i++}`);  vals.push(cobranca_modo === 'por_veiculo' ? 'por_veiculo' : (cobranca_modo === 'fixo' ? 'fixo' : null)); }
@@ -1188,8 +1252,18 @@ app.put('/api/clientes/:id', auth, adminOnly, async (req, res) => {
     if (senha !== undefined && senha.length >= 6)      { sets.push(`senha=$${i++}`);          vals.push(senha); }
     if (!sets.length) return res.status(400).json({ erro: 'Nada a atualizar' });
     vals.push(id);
-    const r = await pool.query(`UPDATE clientes SET ${sets.join(',')} WHERE id=$${i} RETURNING id,nome,email,plano,valor_plano,dia_vencimento,ativo`, vals);
+    const r = await pool.query(`UPDATE clientes SET ${sets.join(',')} WHERE id=$${i} RETURNING id,nome,email,telefone,endereco,plano,valor_plano,dia_vencimento,ativo`, vals);
     res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.delete('/api/clientes/:id', auth, adminOnly, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  try {
+    const r = await pool.query('DELETE FROM clientes WHERE id=$1 RETURNING id', [id]);
+    if (!r.rows.length) return res.status(404).json({ erro: 'Cliente não encontrado' });
+    res.json({ ok: true });
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
@@ -1320,6 +1394,131 @@ app.delete('/api/veiculos/:id', auth, adminOnly, async (req, res) => {
   if (!id) return res.status(400).json({ erro: 'ID inválido' });
   await pool.query('DELETE FROM veiculos WHERE id=$1', [id]);
   res.json({ ok: true });
+});
+
+/* ─── FELOGIX FLEET: CHECKLIST DE VEÍCULOS ─── */
+app.get('/api/fleet/checklist-itens', auth, async (req, res) => {
+  let clienteId;
+  if (req.user.role === 'admin') {
+    clienteId = parseInt(req.query.cliente_id);
+    if (!clienteId) return res.status(400).json({ erro: 'cliente_id é obrigatório' });
+  } else if (req.user.role === 'colaborador') {
+    clienteId = req.user.clienteId;
+  } else {
+    clienteId = req.user.id;
+  }
+  const r = await pool.query(
+    'SELECT * FROM fleet_checklist_itens WHERE cliente_id=$1 AND ativo=true ORDER BY ordem, id',
+    [clienteId]
+  );
+  res.json(r.rows);
+});
+
+app.post('/api/fleet/checklist-itens', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const { nome, ordem, cliente_id } = req.body;
+  if (!nome || !isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
+  let clienteId;
+  if (req.user.role === 'admin') {
+    clienteId = parseInt(cliente_id);
+    if (!clienteId) return res.status(400).json({ erro: 'cliente_id é obrigatório' });
+  } else {
+    clienteId = req.user.id;
+  }
+  try {
+    const r = await pool.query(
+      'INSERT INTO fleet_checklist_itens (cliente_id,nome,ordem) VALUES ($1,$2,$3) RETURNING *',
+      [clienteId, nome.trim(), parseInt(ordem) || 0]
+    );
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.put('/api/fleet/checklist-itens/:id', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const atual = await pool.query('SELECT cliente_id FROM fleet_checklist_itens WHERE id=$1', [id]);
+  if (!atual.rows.length) return res.status(404).json({ erro: 'Item não encontrado' });
+  if (req.user.role !== 'admin' && atual.rows[0].cliente_id !== req.user.id)
+    return res.status(403).json({ erro: 'Sem permissão para este item' });
+  const { nome, ordem, ativo } = req.body;
+  try {
+    const sets = []; const vals = []; let i = 1;
+    if (nome !== undefined && isSafe(nome)) { sets.push(`nome=$${i++}`); vals.push(nome.trim()); }
+    if (ordem !== undefined)                { sets.push(`ordem=$${i++}`); vals.push(parseInt(ordem) || 0); }
+    if (ativo !== undefined)                { sets.push(`ativo=$${i++}`); vals.push(!!ativo); }
+    if (!sets.length) return res.status(400).json({ erro: 'Nada a atualizar' });
+    vals.push(id);
+    const r = await pool.query(`UPDATE fleet_checklist_itens SET ${sets.join(',')} WHERE id=$${i} RETURNING *`, vals);
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.delete('/api/fleet/checklist-itens/:id', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const atual = await pool.query('SELECT cliente_id FROM fleet_checklist_itens WHERE id=$1', [id]);
+  if (!atual.rows.length) return res.status(404).json({ erro: 'Item não encontrado' });
+  if (req.user.role !== 'admin' && atual.rows[0].cliente_id !== req.user.id)
+    return res.status(403).json({ erro: 'Sem permissão para este item' });
+  await pool.query('DELETE FROM fleet_checklist_itens WHERE id=$1', [id]);
+  res.json({ ok: true });
+});
+
+// Resolve o cliente_id do veículo e confere permissão; null = não existe, false = sem permissão
+async function veiculoPermitido(req, veiculoId) {
+  const v = await pool.query('SELECT cliente_id FROM veiculos WHERE id=$1', [veiculoId]);
+  if (!v.rows.length) return null;
+  const clienteId = v.rows[0].cliente_id;
+  if (req.user.role === 'admin') return clienteId;
+  if (req.user.role === 'gestor') return clienteId === req.user.id ? clienteId : false;
+  if (req.user.role === 'colaborador') {
+    const g = await pool.query('SELECT 1 FROM grupo_veiculos_itens WHERE grupo_id=$1 AND veiculo_id=$2', [req.user.grupoId, veiculoId]);
+    return g.rows.length ? clienteId : false;
+  }
+  return false;
+}
+
+app.post('/api/fleet/checklist-execucoes', auth, async (req, res) => {
+  const { veiculo_id, tipo, itens } = req.body;
+  const veiculoId = parseInt(veiculo_id);
+  if (!veiculoId) return res.status(400).json({ erro: 'Veículo é obrigatório' });
+  if (!Array.isArray(itens) || !itens.length) return res.status(400).json({ erro: 'Itens do checklist são obrigatórios' });
+  const tipoChecklist = tipo === 'pos' ? 'pos' : 'pre';
+  try {
+    const clienteId = await veiculoPermitido(req, veiculoId);
+    if (clienteId === null) return res.status(404).json({ erro: 'Veículo não encontrado' });
+    if (clienteId === false) return res.status(403).json({ erro: 'Sem permissão para este veículo' });
+    const itensLimpos = itens.map(it => ({
+      item_id: it.item_id || null,
+      nome: String(it.nome || '').slice(0, 100),
+      status: ['ok', 'problema', 'na'].includes(it.status) ? it.status : 'ok',
+      obs: it.obs ? String(it.obs).slice(0, 300) : ''
+    }));
+    const temProblema = itensLimpos.some(it => it.status === 'problema');
+    const r = await pool.query(
+      'INSERT INTO fleet_checklist_execucoes (cliente_id,veiculo_id,executado_por,tipo,itens,tem_problema) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+      [clienteId, veiculoId, req.user.nome || 'N/A', tipoChecklist, JSON.stringify(itensLimpos), temProblema]
+    );
+    res.json(r.rows[0]);
+  } catch (err) { console.error('Erro ao salvar checklist:', err); res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.get('/api/fleet/checklist-execucoes', auth, async (req, res) => {
+  const veiculoId = parseInt(req.query.veiculo_id);
+  if (!veiculoId) return res.status(400).json({ erro: 'veiculo_id é obrigatório' });
+  try {
+    const clienteId = await veiculoPermitido(req, veiculoId);
+    if (clienteId === null) return res.status(404).json({ erro: 'Veículo não encontrado' });
+    if (clienteId === false) return res.status(403).json({ erro: 'Sem permissão para este veículo' });
+    const r = await pool.query(
+      'SELECT * FROM fleet_checklist_execucoes WHERE veiculo_id=$1 ORDER BY criado_em DESC LIMIT 50',
+      [veiculoId]
+    );
+    res.json(r.rows);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 /* ─── GRUPOS DE VEÍCULOS (apenas clientes CNPJ) ─── */

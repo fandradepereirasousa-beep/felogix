@@ -333,6 +333,14 @@ let VEHICLES = [], COMPARTILHAMENTOS = [], liveTimer = null, trailLine = null;
 let tileLayer = null, mapRetryTimer = null, clusterGroup = null;
 let liveWS = null, wsReconnectTimer = null;
 
+/* ─── MODO DO APP (Track/Connect/Fleet/Patrol) ─── */
+const APP_MODE = location.pathname.startsWith('/connect') ? 'connect'
+  : location.pathname.startsWith('/fleet') ? 'fleet'
+  : location.pathname.startsWith('/patrol') ? 'patrol'
+  : 'track';
+const APP_MODE_LABEL = {track:'Track', connect:'Connect', fleet:'Fleet', patrol:'Patrol'}[APP_MODE];
+document.querySelectorAll('.logo-plan, #tbPlan').forEach(el => el.textContent = APP_MODE_LABEL);
+
 /* ─── API ─── */
 let sessionExpiredHandled = false;
 function sessionExpired() {
@@ -471,6 +479,7 @@ function buildNav() {
     {ic:'🚗',lbl:'Veículos',id:'veiculos'},
     {ic:'💰',lbl:'Financeiro',id:'financeiro'},
   ];
+  if (APP_MODE === 'fleet') adminTabs.splice(3, 0, {ic:'✅',lbl:'Checklist',id:'checklist'});
   const gestorTabs = [
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
     {ic:'🚗',lbl:'Veículos',id:'veiculos'},
@@ -481,7 +490,33 @@ function buildNav() {
   const colaboradorTabs = [
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
   ];
-  const tabs = CU.role === 'admin' ? adminTabs : CU.role === 'colaborador' ? colaboradorTabs : gestorTabs;
+
+  // Connect/Fleet/Patrol: nav própria do gestor, reaproveitando as mesmas telas/endpoints do Track
+  const gestorTabsConnect = [
+    {ic:'🗺',lbl:'Mapa',id:'mapa'},
+    {ic:'📱',lbl:'Celulares',id:'compartilhamentos'},
+  ];
+  const gestorTabsFleet = [
+    {ic:'🗺',lbl:'Mapa',id:'mapa'},
+    {ic:'✅',lbl:'Checklist',id:'checklist'},
+    {ic:'🚗',lbl:'Veículos',id:'veiculos'},
+    {ic:'🔔',lbl:'Alertas',id:'alertas'},
+  ];
+  const gestorTabsPatrol = [
+    {ic:'🗺',lbl:'Mapa',id:'mapa'},
+    {ic:'📱',lbl:'Equipe em campo',id:'compartilhamentos'},
+    {ic:'📍',lbl:'Pontos de ronda',id:'geocercas'},
+  ];
+  if (APP_MODE === 'fleet') colaboradorTabs.push({ic:'✅',lbl:'Checklist',id:'checklist'});
+
+  let tabs;
+  if (CU.role === 'admin') tabs = adminTabs;
+  else if (CU.role === 'colaborador') tabs = colaboradorTabs;
+  else if (APP_MODE === 'connect') tabs = gestorTabsConnect;
+  else if (APP_MODE === 'fleet') tabs = gestorTabsFleet;
+  else if (APP_MODE === 'patrol') tabs = gestorTabsPatrol;
+  else tabs = gestorTabs;
+
   document.getElementById('bnav').innerHTML = tabs.map(t =>
     `<div class="bni" id="bni_${t.id}" onclick="goTab('${t.id}',this)">
       <div class="ic">${t.ic}</div><div>${t.lbl}</div><div class="bni-dot"></div>
@@ -509,6 +544,7 @@ function goTab(id, el) {
     alertas:    () => renderAlertas(c),
     equipe:     () => renderEquipe(c),
     geocercas:  () => renderGeocercas(c),
+    checklist:  () => renderChecklist(c),
   };
   if (map_[id]) map_[id]();
 }
@@ -517,7 +553,7 @@ function goTab(id, el) {
 function renderMapa(c) {
   if (document.getElementById('mapWrap')) {
     if (map) { map.invalidateSize(); centerAll(); }
-    loadVehicles();
+    loadMapData();
     return;
   }
   mapSbOpen = window.innerWidth > 680;
@@ -543,7 +579,30 @@ function renderMapa(c) {
     </div>
   </div>`;
   requestAnimationFrame(() => requestAnimationFrame(() => initMap()));
-  loadVehicles();
+  loadMapData();
+}
+
+// Connect/Patrol rastreiam pessoas (celulares); Track/Fleet rastreiam veículos
+function loadMapData() {
+  if (APP_MODE === 'connect' || APP_MODE === 'patrol') loadCompartilhamentos();
+  else loadVehicles();
+}
+
+async function loadCompartilhamentos() {
+  clearTimeout(mapRetryTimer);
+  try {
+    const comps = await api('GET', '/api/compartilhamentos');
+    COMPARTILHAMENTOS = comps.filter(c => c.tipo === 'pessoa');
+    syncMkrs();
+    if (map) centerAll();
+    updateMapList();
+  } catch(e) {
+    console.error(e);
+    const el = document.getElementById('mapList');
+    if (el) el.innerHTML = `<div class="empty"><div class="ei">⚠️</div><div class="et">Erro ao carregar</div><div class="es">${e.message||'Tente de novo'}</div></div>
+      <div style="padding:0 12px 12px"><button class="mbtn" onclick="loadCompartilhamentos()">🔄 Tentar novamente</button></div>`;
+    mapRetryTimer = setTimeout(loadCompartilhamentos, 5000);
+  }
 }
 
 async function loadVehicles() {
@@ -912,6 +971,9 @@ function connectWS() {
     try {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'posicoes') applyPosicoes(msg.data);
+      else if (msg.type === 'compartilhamento' && (APP_MODE === 'connect' || APP_MODE === 'patrol')) {
+        msg.data.filter(c => c.tipo === 'pessoa').forEach(applyCompartilhamento);
+      }
     } catch(e) {}
   };
   liveWS.onclose = () => { liveWS = null; if (TOKEN) wsReconnectTimer = setTimeout(connectWS, 4000); };
@@ -941,12 +1003,14 @@ async function renderClientes(c) {
               <div class="card-info">
                 <div class="card-title" style="font-family:'Inter',sans-serif;font-size:14px">${cl.nome}</div>
                 <div class="card-sub">${cl.tipo.toUpperCase()} ${cl.documento} · ${cl.email}</div>
+                ${cl.telefone||cl.endereco?`<div class="card-sub" style="margin-top:2px">${cl.telefone?'📞 '+cl.telefone:''}${cl.telefone&&cl.endereco?' · ':''}${cl.endereco?'📍 '+cl.endereco:''}</div>`:''}
               </div>
               <span class="badge ${planoBadge[cl.plano]||'badge-gray'}">${cl.plano.toUpperCase()}</span>
             </div>
             <div class="acts-row">
               <div class="act-btn blue" onclick="openEditCliente(${JSON.stringify(cl).replace(/"/g,'&quot;')})">✏️ Editar</div>
               <div class="act-btn ${cl.ativo?'red':'green'}" onclick="toggleCliente(${cl.id},${cl.ativo})">${cl.ativo?'🔴 Desativar':'🟢 Ativar'}</div>
+              <div class="act-btn red" onclick="if(confirm('Excluir o cliente \\'${cl.nome.replace(/'/g,"\\'")}\\'? Isso remove também veículos, geocercas e histórico vinculados. Esta ação não pode ser desfeita.'))deleteCliente(${cl.id})">🗑 Excluir</div>
             </div>
           </div>`).join('')}
     </div>`;
@@ -962,6 +1026,10 @@ function openAddCliente() {
     </div>
     <div class="mf"><label>Nome / Razão Social</label><input id="mNome" placeholder="Nome do cliente"/></div>
     <div class="mf"><label>Email</label><input id="mEmail" type="email" placeholder="cliente@email.com"/></div>
+    <div class="mf-row">
+      <div class="mf"><label>Celular</label><input id="mTelefone" placeholder="(11) 90000-0000"/></div>
+      <div class="mf"><label>Endereço</label><input id="mEndereco" placeholder="Rua, número, cidade"/></div>
+    </div>
     <div class="mf"><label>Plano</label>
       <select id="mPlano" onchange="toggleValor(this.value)">
         <option value="cortesia">Cortesia (grátis)</option>
@@ -1000,6 +1068,8 @@ async function saveCliente() {
     documento: document.getElementById('mDoc').value.trim(),
     nome: document.getElementById('mNome').value.trim(),
     email: document.getElementById('mEmail').value.trim(),
+    telefone: document.getElementById('mTelefone').value.trim(),
+    endereco: document.getElementById('mEndereco').value.trim(),
     plano,
     cobranca_modo: plano === 'personalizado' ? document.getElementById('mModo').value : null,
     valor_plano: parseFloat(document.getElementById('mValor')?.value||0)||0,
@@ -1010,7 +1080,9 @@ async function saveCliente() {
     const r = await api('POST','/api/clientes',body);
     const ok = document.getElementById('clienteOk');
     ok.style.display='block';
-    ok.textContent = `✅ Cliente cadastrado! Senha gerada: ${r.senha_gerada} (enviada por email)`;
+    ok.textContent = r.email_enviado
+      ? `✅ Cliente cadastrado! Senha gerada: ${r.senha_gerada} (enviada por email)`
+      : `✅ Cliente cadastrado! Senha gerada: ${r.senha_gerada} (não foi possível enviar por email — informe manualmente)`;
     renderClientes(document.getElementById('mainContent'));
   } catch(e) { toast(e.message,'err'); }
 }
@@ -1020,6 +1092,10 @@ function openEditCliente(cl) {
   document.getElementById('mBody').innerHTML = `
     <div class="mf"><label>Nome</label><input id="eNome" value="${cl.nome}"/></div>
     <div class="mf"><label>Email</label><input id="eEmail" type="email" value="${cl.email}"/></div>
+    <div class="mf-row">
+      <div class="mf"><label>Celular</label><input id="eTelefone" value="${cl.telefone||''}" placeholder="(11) 90000-0000"/></div>
+      <div class="mf"><label>Endereço</label><input id="eEndereco" value="${cl.endereco||''}" placeholder="Rua, número, cidade"/></div>
+    </div>
     <div class="mf"><label>Nova senha (deixe em branco para não alterar)</label><input id="eSenha" type="text" placeholder="Nova senha…"/></div>
     <div class="mf"><label>Plano</label>
       <select id="ePlano" onchange="toggleValorE(this.value)">
@@ -1053,6 +1129,8 @@ async function updateCliente(id) {
   const body = {
     nome: document.getElementById('eNome').value.trim(),
     email: document.getElementById('eEmail').value.trim(),
+    telefone: document.getElementById('eTelefone').value.trim(),
+    endereco: document.getElementById('eEndereco').value.trim(),
     plano: document.getElementById('ePlano').value,
     cobranca_modo: document.getElementById('ePlano').value === 'personalizado' ? document.getElementById('eModo').value : null,
     valor_plano: parseFloat(document.getElementById('eValor')?.value||0)||0,
@@ -1071,6 +1149,14 @@ async function toggleCliente(id, ativo) {
   try {
     await api('PUT',`/api/clientes/${id}`,{ativo:!ativo});
     toast(ativo?'Cliente desativado':'Cliente ativado','ok');
+    renderClientes(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function deleteCliente(id) {
+  try {
+    await api('DELETE',`/api/clientes/${id}`);
+    toast('Cliente excluído','ok');
     renderClientes(document.getElementById('mainContent'));
   } catch(e) { toast(e.message,'err'); }
 }
@@ -1294,6 +1380,158 @@ async function showDemoLink(compId) {
       </div>`;
     openModal();
   } catch(e) { toast(e.message,'err'); }
+}
+
+/* ─── FELOGIX FLEET: CHECKLIST DE VEÍCULOS ─── */
+let checklistClienteId = null;
+let checklistItensAtual = [];
+
+async function checklistBuscarItens() {
+  if (CU.role === 'admin') {
+    if (checklistClienteId == null) return [];
+    return api('GET', `/api/fleet/checklist-itens?cliente_id=${checklistClienteId}`);
+  }
+  return api('GET', '/api/fleet/checklist-itens');
+}
+
+async function renderChecklist(c) {
+  c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
+  try {
+    const veiculos = await api('GET', '/api/veiculos');
+    let clientesSelHtml = '';
+    if (CU.role === 'admin') {
+      const clientesUnicos = [...new Map(veiculos.map(v => [v.cliente_id, v.cliente_nome])).entries()];
+      if (checklistClienteId == null && clientesUnicos.length) checklistClienteId = clientesUnicos[0][0];
+      clientesSelHtml = clientesUnicos.length ? `<div class="mf"><label>Cliente</label>
+        <select onchange="checklistClienteId=parseInt(this.value);renderChecklist(document.getElementById('mainContent'))">
+          ${clientesUnicos.map(([id,nome]) => `<option value="${id}" ${id===checklistClienteId?'selected':''}>${nome}</option>`).join('')}
+        </select></div>` : `<div class="empty"><div class="ei">🚗</div><div class="et">Nenhum cliente com veículo cadastrado ainda</div></div>`;
+    }
+    const veiculosCliente = CU.role === 'admin' ? veiculos.filter(v => v.cliente_id === checklistClienteId) : veiculos;
+    const itens = await checklistBuscarItens();
+    checklistItensAtual = itens;
+
+    c.innerHTML = `<div class="pp">
+      <div class="sec-title">Checklist de Veículos</div>
+      ${clientesSelHtml}
+
+      <div class="sec-title" style="font-size:13px;margin-top:18px">Itens do checklist
+        ${CU.role !== 'colaborador' ? `<button class="add-btn" onclick="openAddChecklistItem()">＋ Item</button>` : ''}
+      </div>
+      ${!itens.length ? `<div class="empty"><div class="ei">✅</div><div class="et">Nenhum item cadastrado</div></div>` :
+        itens.map(it => `<div class="card">
+          <div class="card-top">
+            <div class="card-info"><div class="card-title">${it.nome}</div></div>
+            ${CU.role !== 'colaborador' ? `<div class="acts-row">
+              <div class="act-btn red" onclick="if(confirm('Remover item \\'${it.nome.replace(/'/g,"\\'")}\\'?'))deleteChecklistItem(${it.id})">🗑</div>
+            </div>` : ''}
+          </div>
+        </div>`).join('')}
+
+      <div class="sec-title" style="font-size:13px;margin-top:18px">Executar checklist</div>
+      ${!veiculosCliente.length ? `<div class="empty"><div class="ei">🚗</div><div class="et">Nenhum veículo disponível</div></div>` : `
+        <div class="mf"><label>Veículo</label>
+          <select id="chkVeiculo">${veiculosCliente.map(v => `<option value="${v.id}">${v.placa} — ${v.modelo||'Veículo'}</option>`).join('')}</select>
+        </div>
+        <button class="mbtn" onclick="abrirExecucaoChecklist()">📋 Iniciar checklist</button>`}
+
+      ${veiculosCliente.length ? `
+        <div class="sec-title" style="font-size:13px;margin-top:18px">Histórico recente</div>
+        <div class="mf"><label>Veículo</label>
+          <select id="histVeiculo" onchange="carregarHistoricoChecklist(parseInt(this.value))">
+            ${veiculosCliente.map(v => `<option value="${v.id}">${v.placa}</option>`).join('')}
+          </select>
+        </div>
+        <div id="checklistHist"><div class="loading"><div class="spinner"></div>Carregando…</div></div>` : ''}
+    </div>`;
+    if (veiculosCliente.length) carregarHistoricoChecklist(veiculosCliente[0].id);
+  } catch(e) { c.innerHTML = `<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+function openAddChecklistItem() {
+  document.getElementById('mTitle').textContent = 'Novo item do checklist';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Nome do item</label><input id="ciNome" placeholder="Ex: Pneus e calibragem"/></div>
+    <button class="mbtn" onclick="saveChecklistItem()">Adicionar item</button>`;
+  openModal();
+}
+
+async function saveChecklistItem() {
+  const nome = document.getElementById('ciNome').value.trim();
+  if (!nome) return toast('Informe o nome do item', 'err');
+  try {
+    const body = { nome };
+    if (CU.role === 'admin') body.cliente_id = checklistClienteId;
+    await api('POST', '/api/fleet/checklist-itens', body);
+    closeModal(); toast('Item adicionado ✅', 'ok');
+    renderChecklist(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+async function deleteChecklistItem(id) {
+  try {
+    await api('DELETE', `/api/fleet/checklist-itens/${id}`);
+    toast('Item removido', 'ok');
+    renderChecklist(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+async function abrirExecucaoChecklist() {
+  const veiculoId = parseInt(document.getElementById('chkVeiculo').value);
+  if (!veiculoId) return;
+  if (!checklistItensAtual.length) return toast('Cadastre itens no checklist antes de executar', 'err');
+  document.getElementById('mTitle').textContent = 'Executar checklist';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Tipo</label>
+      <select id="ceTipo"><option value="pre">Pré-viagem</option><option value="pos">Pós-viagem</option></select>
+    </div>
+    ${checklistItensAtual.map(it => `
+      <div class="mf" style="border-bottom:1px solid var(--b1);padding-bottom:10px;margin-bottom:10px">
+        <label>${it.nome}</label>
+        <select id="ceStatus_${it.id}" onchange="document.getElementById('ceObsBox_${it.id}').style.display=this.value==='problema'?'block':'none'">
+          <option value="ok">✅ OK</option>
+          <option value="problema">⚠️ Problema</option>
+          <option value="na">— N/A</option>
+        </select>
+        <div id="ceObsBox_${it.id}" style="display:none;margin-top:6px"><input id="ceObs_${it.id}" placeholder="Descreva o problema…"/></div>
+      </div>`).join('')}
+    <button class="mbtn" onclick="saveChecklistExecucao(${veiculoId})">Salvar checklist</button>`;
+  openModal();
+}
+
+async function saveChecklistExecucao(veiculoId) {
+  const tipo = document.getElementById('ceTipo').value;
+  const itens = checklistItensAtual.map(it => ({
+    item_id: it.id,
+    nome: it.nome,
+    status: document.getElementById(`ceStatus_${it.id}`).value,
+    obs: document.getElementById(`ceObs_${it.id}`)?.value?.trim() || ''
+  }));
+  try {
+    await api('POST', '/api/fleet/checklist-execucoes', { veiculo_id: veiculoId, tipo, itens });
+    closeModal(); toast('Checklist salvo ✅', 'ok');
+    carregarHistoricoChecklist(veiculoId);
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+async function carregarHistoricoChecklist(veiculoId) {
+  const el = document.getElementById('checklistHist');
+  if (!el) return;
+  el.innerHTML = `<div class="loading"><div class="spinner"></div>Carregando…</div>`;
+  try {
+    const execs = await api('GET', `/api/fleet/checklist-execucoes?veiculo_id=${veiculoId}`);
+    el.innerHTML = !execs.length ? `<div class="empty"><div class="ei">📋</div><div class="et">Nenhum checklist registrado</div></div>` :
+      execs.map(ex => `<div class="card">
+        <div class="card-top">
+          <div class="card-info">
+            <div class="card-title">${ex.tipo==='pos'?'Pós-viagem':'Pré-viagem'} · ${new Date(ex.criado_em).toLocaleString('pt-BR')}</div>
+            <div class="card-sub">Por ${ex.executado_por||'—'}</div>
+          </div>
+          <span class="badge ${ex.tem_problema?'badge-blocked':'badge-green'}">${ex.tem_problema?'⚠️ Problema':'✅ OK'}</span>
+        </div>
+        ${(ex.itens||[]).filter(it => it.status==='problema').map(it => `<div class="card-sub" style="margin-top:4px;color:var(--red)">⚠️ ${it.nome}${it.obs?': '+it.obs:''}</div>`).join('')}
+      </div>`).join('');
+  } catch(e) { el.innerHTML = `<div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div>`; }
 }
 
 /* ─── ALERTAS ─── */

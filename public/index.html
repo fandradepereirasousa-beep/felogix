@@ -1233,6 +1233,9 @@ async function openAddVeiculo() {
         </label>` : ''}
       </div>
     </div>
+    <div id="vImeiInfo" style="font-size:12px;color:var(--t2);background:var(--s2);padding:12px;border-radius:8px;margin-bottom:12px">
+      📡 Rastreamento por GPS em tempo real${mostraSemRastreador?' + controle de custos (checklist, manutenção etc.) no mesmo veículo':''}.
+    </div>
     <div class="mf" id="vImeiField"><label>IMEI do rastreador</label><input id="vImei" placeholder="Ex: 358899012345678"/></div>
     <div id="vSemRastreadorInfo" style="display:none;font-size:12px;color:var(--t2);background:var(--s2);padding:12px;border-radius:8px;margin-bottom:12px">
       🧮 Sem rastreamento por GPS. Use para controlar custos (combustível, manutenção etc.) de veículos sem equipamento instalado.
@@ -1255,6 +1258,7 @@ async function openAddVeiculo() {
 function toggleVeiculoTipo() {
   const tipo = document.querySelector('input[name="vTipo"]:checked').value;
   document.getElementById('vImeiField').style.display = tipo==='imei'?'block':'none';
+  document.getElementById('vImeiInfo').style.display = tipo==='imei'?'block':'none';
   document.getElementById('vSemRastreadorInfo').style.display = tipo==='sem_rastreador'?'block':'none';
 }
 

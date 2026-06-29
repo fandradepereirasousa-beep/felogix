@@ -1,0 +1,63 @@
+name: Limpar container Docker órfão do Traccar
+
+# Disparo manual. O Traccar de produção roda nativo (systemd), não em Docker.
+# Existe um container "traccar" órfão de uma tentativa anterior (status
+# "Created", nunca iniciado — confirmado via diagnóstico) que não faz nada,
+# mas pode confundir ou colidir se alguém der "docker start" nele (mesmas
+# portas 8082/5023 do serviço nativo). Este workflow só remove o container
+# se ele existir E nunca tiver sido iniciado. Qualquer outro estado (rodando,
+# parado depois de já ter rodado, etc.) ele aborta sem tocar em nada.
+on:
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remover container "traccar" só se status for Created (nunca iniciado)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: false
+          script: |
+            set -e
+
+            if ! command -v docker &> /dev/null; then
+              echo "Docker não instalado neste VPS — nada a fazer."
+              exit 0
+            fi
+
+            if ! docker inspect traccar &> /dev/null; then
+              echo "Container 'traccar' não existe — nada a fazer."
+              exit 0
+            fi
+
+            STATUS=$(docker inspect --format '{{.State.Status}}' traccar)
+            STARTED_AT=$(docker inspect --format '{{.State.StartedAt}}' traccar)
+            echo "Container 'traccar' encontrado — status: $STATUS, StartedAt: $STARTED_AT"
+
+            if [ "$STATUS" = "created" ] && [ "$STARTED_AT" = "0001-01-01T00:00:00Z" ]; then
+              echo "Confirmado: nunca foi iniciado. Removendo container órfão (não afeta o Traccar nativo, que é systemd)."
+              docker rm traccar
+              echo "Removido."
+            else
+              echo "Status não é 'created'/nunca-iniciado — por segurança, não vou remover. Abortando sem alterar nada."
+              exit 1
+            fi
+
+      - name: Confirmar resultado
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: false
+          script: |
+            echo "--- containers docker remanescentes ---"
+            command -v docker &> /dev/null && docker ps -a || echo "(docker não instalado)"
+            echo "--- traccar nativo (systemd) intacto? ---"
+            systemctl is-active traccar

@@ -5,9 +5,9 @@ Guia completo para integrar rastreadores GPS (Trackerking EC33) com a plataforma
 ## 🎯 Visão Geral
 
 ```
-Trackerking EC33 (Porta 5023)
-  ↓ (Protocolo GT06)
-Traccar Server (Porta 8082)
+Trackerking EC33 (Porta 5023/TCP)
+  ↓ (Protocolo GT06, sempre TCP)
+Traccar Server (Porta 8082, nativo via systemd)
   ↓ (API REST)
 Felogix Backend
   ↓
@@ -18,50 +18,47 @@ Frontend Mapa
 
 - **Modelo**: Trackerking EC33 4G
 - **Quantidade**: 3 unidades
-- **Protocolo**: GT06
+- **Protocolo**: GT06 (sempre TCP — o GT06 não usa UDP)
 - **Conexão**: 4G/GPS
 - **Chegada**: 1-5 de julho
 
 ## 🚀 Instalação
 
-### 1. Instalar Traccar no VPS (automatizado)
+### 1. Traccar nativo no VPS (já configurado)
 
-A instalação já está automatizada pelo workflow `.github/workflows/setup-traccar.yml`
-(disparo manual pela aba Actions do GitHub → "Configurar Traccar no VPS" → Run workflow).
-Ele é idempotente — pode ser rodado de novo a qualquer momento sem risco.
+O Traccar já está instalado **nativamente** no VPS (fora de Docker, como serviço
+systemd `traccar`) — não roda em container. A configuração do listener GT06 está
+automatizada pelo workflow `.github/workflows/setup-traccar.yml` (disparo manual
+pela aba Actions do GitHub → "Configurar Traccar no VPS" → Run workflow).
+Ele é idempotente — pode ser rodado de novo a qualquer momento sem risco (se
+`gt06.port` já existir em `traccar.xml`, não toca em nada).
 
 O que o workflow faz:
-- Instala Docker no VPS se ainda não tiver
-- Sobe o container `traccar/traccar:latest` com `--restart unless-stopped`
-- **Painel admin (8082) fica acessível só via `localhost`** — não exposto à internet
-- **Porta GT06 (5023/UDP) fica pública**, para os rastreadores se conectarem
-- Libera 5023/UDP no `ufw` se estiver ativo no VPS
+- Confirma que `/opt/traccar/conf/traccar.xml` existe (não reinstala, não substitui)
+- Adiciona a entrada `gt06.port=5023` se ainda não houver, e reinicia só o serviço
+  `traccar` (systemd) para aplicar — com backup automático e rollback se algo falhar
+- Libera **5023/TCP** no `ufw` se estiver ativo no VPS (o GT06 é TCP, não UDP)
 - Sincroniza a senha do usuário `admin` do Traccar com o valor de `TRACCAR_PASS`
   já configurado no `.env` de produção (se houver um diferente do padrão)
 
-Se preferir rodar manualmente:
+Comandos úteis para conferir manualmente (somente leitura):
 
 ```bash
 ssh root@felogix.com.br
 
-curl -fsSL https://get.docker.com -o get-docker.sh
-sh get-docker.sh
-
-docker run -d \
-  --name traccar \
-  --restart unless-stopped \
-  -p 127.0.0.1:8082:8082 \
-  -p 5023:5023/udp \
-  -v traccar-data:/opt/traccar/data \
-  traccar/traccar:latest
-
-docker logs -f traccar
+systemctl status traccar
+ss -ltn | grep ':5023 '          # confirma listener GT06 (TCP)
+grep -i gt06 /opt/traccar/conf/traccar.xml
+journalctl -u traccar -n 100 --no-pager
 ```
 
 ### 2. Acessar Interface Traccar
 
-O painel admin não fica mais exposto publicamente (só `localhost:8082` no VPS).
-Para acessar de fora, abra um túnel SSH:
+O processo do Traccar escuta em `*:8082` (todas as interfaces), mas o `ufw`
+(ativo no VPS) não tem regra explícita liberando 8082 — ou seja, o painel
+admin **não fica acessível pela internet**, só de dentro do próprio VPS,
+graças à política padrão do firewall (não por bind em localhost). Para
+acessar de fora, abra um túnel SSH:
 
 ```bash
 ssh -L 8082:localhost:8082 root@felogix.com.br
@@ -123,9 +120,9 @@ SAVE
 
 ```bash
 # No terminal (VPS)
-docker logs -f traccar | grep "GT06"
+journalctl -u traccar -f | grep -i gt06
 
-# Deve aparecer:
+# Deve aparecer algo como:
 # [GT06] DeviceID received: <IMEI>
 # [GT06] Connected from <IP>
 ```
@@ -183,21 +180,21 @@ curl -X GET http://felogix.com.br:3000/api/traccar/status \
 ### "Traccar não conecta"
 
 ```bash
-# Verificar se porta está aberta
-telnet felogix.com.br 5023
+# Verificar se a porta TCP está aberta
+nc -zv felogix.com.br 5023
 
 # Ver logs do Traccar
-docker logs traccar | tail -50
+journalctl -u traccar -n 100 --no-pager
 
 # Reiniciar Traccar
-docker restart traccar
+systemctl restart traccar
 ```
 
 ### "Equipamento não se conecta"
 
 1. Verificar SIM card (dados ativo)
 2. Verificar APN (operadora correta)
-3. Verificar servidor e porta (felogix.com.br:5023)
+3. Verificar servidor e porta (felogix.com.br:5023, sempre TCP)
 4. Enviar SMS de reset: `RESET`
 
 ### "Posições antigas/não atualizam"
@@ -227,8 +224,8 @@ docker restart traccar
 
 ## ✅ Checklist Final
 
-- [ ] Traccar instalado e rodando (porta 8082)
-- [ ] Porta 5023/UDP aberta no firewall
+- [x] Traccar nativo instalado e rodando (porta 8082, serviço systemd)
+- [x] Porta 5023/TCP aberta no firewall e listener GT06 ativo
 - [ ] 3x Trackerking EC33 com SIM e APNs configurados
 - [ ] Veículos sincronizados no Felogix
 - [ ] Posições atualizando no mapa
@@ -238,10 +235,10 @@ docker restart traccar
 ## 📞 Suporte
 
 Qualquer dúvida durante a instalação:
-1. Verificar logs: `docker logs traccar`
+1. Verificar logs: `journalctl -u traccar -n 100 --no-pager`
 2. Consultar docs: https://traccar.org/
-3. Testar conectividade: `telnet felogix.com.br 5023`
+3. Testar conectividade: `nc -zv felogix.com.br 5023`
 
 ---
 
-**Status**: Pronto para integração em 1º de julho! 🚀
+**Status**: Traccar nativo + listener GT06 (5023/TCP) confirmados ativos. Pronto para integração quando os equipamentos chegarem!

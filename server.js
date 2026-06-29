@@ -12,6 +12,7 @@ const nodemailer = require('nodemailer');
 const http       = require('http');
 const WebSocket  = require('ws');
 const multer     = require('multer');
+const QRCode     = require('qrcode');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -1051,6 +1052,15 @@ async function initDB() {
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_patrol_checkins_ponto ON patrol_checkins (ponto_id, criado_em DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_patrol_checkins_comp ON patrol_checkins (compartilhamento_id, criado_em DESC)`);
+  // Check-in por QR Code (além do GPS/geocerca já existente): cada ponto recebe um código
+  // único e imutável; o vigilante escaneia o QR físico no local e o servidor confirma a
+  // presença sem depender do GPS do celular.
+  await pool.query(`ALTER TABLE patrol_pontos ADD COLUMN IF NOT EXISTS qr_codigo VARCHAR(20) UNIQUE`);
+  await pool.query(`ALTER TABLE patrol_checkins ADD COLUMN IF NOT EXISTS tipo VARCHAR(10) DEFAULT 'geocerca'`);
+  const pontosSemQr = await pool.query(`SELECT id FROM patrol_pontos WHERE qr_codigo IS NULL`);
+  for (const { id } of pontosSemQr.rows) {
+    await pool.query(`UPDATE patrol_pontos SET qr_codigo=$1 WHERE id=$2`, [crypto.randomBytes(6).toString('hex'), id]);
+  }
   // Conta de teste (gestor) — visualizar Track/Connect/Fleet/Patrol como cliente, sem usar o login admin
   // (precisa existir ANTES do seed de itens de checklist abaixo, para já nascer com o template padrão)
   await pool.query(
@@ -1562,9 +1572,10 @@ app.post('/api/patrol/pontos', auth, async (req, res) => {
     clienteId = req.user.id;
   }
   try {
+    const qrCodigo = crypto.randomBytes(6).toString('hex');
     const r = await pool.query(
-      'INSERT INTO patrol_pontos (cliente_id,nome,latitude,longitude,raio_metros) VALUES ($1,$2,$3,$4,$5) RETURNING *',
-      [clienteId, nome.trim(), lat, lon, raio]
+      'INSERT INTO patrol_pontos (cliente_id,nome,latitude,longitude,raio_metros,qr_codigo) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+      [clienteId, nome.trim(), lat, lon, raio, qrCodigo]
     );
     res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
@@ -1618,6 +1629,21 @@ app.delete('/api/patrol/pontos/:id', auth, async (req, res) => {
     return res.status(403).json({ erro: 'Sem permissão para este ponto' });
   await pool.query('DELETE FROM patrol_pontos WHERE id=$1', [id]);
   res.json({ ok: true });
+});
+
+app.get('/api/patrol/pontos/:id/qrcode', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const r = await pool.query('SELECT cliente_id, nome, qr_codigo FROM patrol_pontos WHERE id=$1', [id]);
+  if (!r.rows.length) return res.status(404).json({ erro: 'Ponto não encontrado' });
+  if (req.user.role !== 'admin' && r.rows[0].cliente_id !== req.user.id)
+    return res.status(403).json({ erro: 'Sem permissão para este ponto' });
+  try {
+    const url = `https://felogix.com.br/patrol/checkin/${r.rows[0].qr_codigo}`;
+    const dataUrl = await QRCode.toDataURL(url, { width: 400, margin: 2 });
+    res.json({ nome: r.rows[0].nome, qr_codigo: r.rows[0].qr_codigo, imagem: dataUrl, url });
+  } catch (err) { res.status(500).json({ erro: 'Erro ao gerar QR Code' }); }
 });
 
 app.get('/api/patrol/checkins', auth, async (req, res) => {
@@ -2248,6 +2274,23 @@ app.post('/api/track/:token/checkin', async (req, res) => {
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
+app.post('/api/track/:token/checkin-qr', async (req, res) => {
+  const { qr_codigo } = req.body;
+  if (!qr_codigo || typeof qr_codigo !== 'string') return res.status(400).json({ erro: 'QR Code inválido' });
+  try {
+    const own = await pool.query('SELECT id, cliente_id, nome FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    if (!own.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
+    const ponto = await pool.query('SELECT * FROM patrol_pontos WHERE qr_codigo=$1 AND cliente_id=$2 AND ativo=true', [qr_codigo, own.rows[0].cliente_id]);
+    if (!ponto.rows.length) return res.status(404).json({ erro: 'Ponto de ronda não encontrado para este QR Code' });
+    const r = await pool.query(
+      `INSERT INTO patrol_checkins (cliente_id,ponto_id,compartilhamento_id,dentro_raio,tipo)
+       VALUES ($1,$2,$3,true,'qrcode') RETURNING *`,
+      [own.rows[0].cliente_id, ponto.rows[0].id, own.rows[0].id]
+    );
+    res.json({ ...r.rows[0], ponto_nome: ponto.rows[0].nome, vigilante_nome: own.rows[0].nome });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
 /* ─── ALERTAS ─── */
 app.get('/api/alertas', auth, async (req, res) => {
   if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.json({});
@@ -2658,6 +2701,7 @@ app.get('/track/:token', async (req, res) => {
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script>
     const TOKEN = '${req.params.token}';
+    try { localStorage.setItem('felogix_track_token', TOKEN); } catch {}
 
     function toggleEditPanel() { document.getElementById('editPanel').classList.toggle('open'); }
 
@@ -2866,6 +2910,76 @@ app.get('/track/:token', async (req, res) => {
     loadPontos();
     setInterval(loadGrupo, 15000);
     setInterval(loadPontos, 15000);
+  </script>
+</body>
+</html>`);
+});
+
+app.get('/patrol/checkin/:qr_codigo', (req, res) => {
+  const qr = req.params.qr_codigo;
+  if (!/^[a-f0-9]{12}$/.test(qr)) return res.status(400).send('QR Code inválido');
+  res.send(`<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Check-in QR Code - Felogix Patrol</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #f5f5f5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .card { background: white; border-radius: 12px; padding: 32px 24px; max-width: 380px; width: 100%; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,.08); }
+    .icon { font-size: 48px; margin-bottom: 12px; }
+    h1 { font-size: 18px; color: #222; margin-bottom: 8px; }
+    p { font-size: 14px; color: #666; line-height: 1.5; }
+    .status-ok { color: #2e7d32; }
+    .status-err { color: #c62828; }
+    .spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid #eee; border-top: 3px solid #6B21D9; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 12px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="spinner" id="spinner"></div>
+    <h1 id="titulo">Confirmando check-in...</h1>
+    <p id="msg">Aguarde um instante.</p>
+  </div>
+  <script>
+    (function () {
+      const QR = '${qr}';
+      const card = document.getElementById('card');
+      const titulo = document.getElementById('titulo');
+      const msg = document.getElementById('msg');
+      const spinner = document.getElementById('spinner');
+
+      function render(icon, cls, t, m) {
+        spinner.style.display = 'none';
+        card.insertAdjacentHTML('afterbegin', '<div class="icon">' + icon + '</div>');
+        titulo.className = cls;
+        titulo.textContent = t;
+        msg.textContent = m;
+      }
+
+      let token;
+      try { token = localStorage.getItem('felogix_track_token'); } catch (e) {}
+
+      if (!token) {
+        render('📍', 'status-err', 'Abra seu link de rastreamento primeiro',
+          'Para usar o check-in por QR Code, abra o seu link pessoal de rastreamento (enviado pelo seu gestor) neste mesmo celular pelo menos uma vez. Depois disso, volte a escanear este QR Code.');
+        return;
+      }
+
+      fetch('/api/track/' + token + '/checkin-qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ qr_codigo: QR })
+      })
+        .then(function (resp) { return resp.json().then(function (data) { return { ok: resp.ok, data: data }; }); })
+        .then(function (r) {
+          if (!r.ok) { render('⚠️', 'status-err', 'Não foi possível confirmar', r.data.erro || 'Erro ao processar o check-in.'); return; }
+          render('✅', 'status-ok', 'Check-in confirmado!', (r.data.ponto_nome ? 'Ponto: ' + r.data.ponto_nome : 'Presença registrada com sucesso.'));
+        })
+        .catch(function () { render('⚠️', 'status-err', 'Falha de conexão', 'Verifique sua internet e escaneie o QR Code novamente.'); });
+    })();
   </script>
 </body>
 </html>`);

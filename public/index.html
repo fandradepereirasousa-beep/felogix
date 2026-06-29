@@ -1710,6 +1710,7 @@ async function renderPontosRonda(c) {
           </div>
           <div class="acts-row">
             <div class="act-btn" onclick="verHistoricoPonto(${p.id})">📋 Histórico</div>
+            <div class="act-btn" onclick="verQrPonto(${p.id})">📷 QR Code</div>
             <div class="act-btn blue" onclick='openPontoRondaModal(${JSON.stringify(p).replace(/'/g,"&#39;")})'>✏️ Editar</div>
             <div class="act-btn red" onclick="if(confirm('Remover o ponto \\'${p.nome.replace(/'/g,"\\'")}\\'?'))deletePontoRonda(${p.id})">🗑 Remover</div>
           </div>
@@ -1809,14 +1810,35 @@ async function verHistoricoPonto(id) {
       : checkins.map(ck => {
           const d = new Date(ck.criado_em);
           const data = d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
+          const porQr = ck.tipo === 'qrcode';
+          const sub = porQr ? '📷 Check-in por QR Code' : `📍 GPS · ${parseFloat(ck.distancia_metros).toFixed(0)}m do ponto`;
           return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--b1)">
             <div>
               <div style="font-size:13px">${ck.vigilante_nome || 'Vigilante'}</div>
-              <div style="font-size:11px;color:var(--t2)">${data} · ${parseFloat(ck.distancia_metros).toFixed(0)}m do ponto</div>
+              <div style="font-size:11px;color:var(--t2)">${data} · ${sub}</div>
             </div>
-            <span class="badge badge-${ck.dentro_raio?'green':'amber'}">${ck.dentro_raio?'✅ No ponto':'⚠️ Fora do raio'}</span>
+            <span class="badge badge-${(porQr||ck.dentro_raio)?'green':'amber'}">${(porQr||ck.dentro_raio)?'✅ No ponto':'⚠️ Fora do raio'}</span>
           </div>`;
         }).join('');
+  } catch(e) { document.getElementById('mBody').innerHTML = `<div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div>`; }
+}
+
+async function verQrPonto(id) {
+  const ponto = PONTOS_RONDA_CACHE.find(p => p.id === id);
+  document.getElementById('mTitle').textContent = 'QR Code — ' + (ponto ? ponto.nome : 'Ponto');
+  document.getElementById('mBody').innerHTML = `<div class="loading"><div class="spinner"></div>Gerando…</div>`;
+  openModal();
+  try {
+    const r = await api('GET', `/api/patrol/pontos/${id}/qrcode`);
+    document.getElementById('mBody').innerHTML = `
+      <div style="text-align:center">
+        <div style="font-size:12px;color:var(--t2);margin-bottom:12px">
+          Imprima e cole este QR Code fisicamente no local do ponto de ronda. O vigilante escaneia com a câmera do celular para fazer check-in sem depender do GPS.
+        </div>
+        <img src="${r.imagem}" alt="QR Code" style="width:240px;height:240px;border:1px solid var(--b1);border-radius:8px;background:#fff;padding:8px"/>
+        <div style="font-size:11px;color:var(--t2);margin-top:10px;word-break:break-all">${r.url}</div>
+        <button class="mbtn sec" style="margin-top:14px" onclick="window.open('${r.imagem}','_blank')">🖨️ Abrir para impressão</button>
+      </div>`;
   } catch(e) { document.getElementById('mBody').innerHTML = `<div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div>`; }
 }
 

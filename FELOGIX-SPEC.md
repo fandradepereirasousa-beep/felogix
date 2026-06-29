@@ -133,7 +133,18 @@ eficiência, linha do tempo de passagens (QR/foto/geocerca), ocorrências com
 fotos — disponível para download manual no painel (ver conflito de e-mail
 automático no item A).
 
-**Status de implementação:** ❌ Nada implementado. Vertical inteiramente nova.
+**Status de implementação:**
+- ✅ Cadastro de pontos de ronda pelo gestor (nome, raio, localização no mapa)
+- ✅ Check-in por geocerca/GPS pelo vigilante via link pessoal (`/track/:token`)
+- ✅ Check-in por QR Code: cada ponto gera um QR físico fixo
+  (`/api/patrol/pontos/:id/qrcode`); o vigilante escaneia com a câmera nativa do
+  celular, é levado a `/patrol/checkin/:qr_codigo`, e a página confirma a
+  presença automaticamente usando o token salvo em `localStorage` ao abrir o
+  link pessoal pelo menos uma vez no mesmo aparelho — sem e-mail/SMS automático
+- ✅ Histórico de check-ins por ponto, distinguindo tipo (`geocerca`/`qrcode`)
+- ❌ Check-in por foto (antifraude) do ponto de interesse
+- ❌ Início/fechamento de plantão, pausas com/sem foto, perfil Supervisor,
+  relatório de fechamento em PDF — nada disso implementado ainda
 
 ---
 

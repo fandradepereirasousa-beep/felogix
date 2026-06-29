@@ -505,7 +505,7 @@ function buildNav() {
   const gestorTabsPatrol = [
     {ic:'🗺',lbl:'Mapa',id:'mapa'},
     {ic:'📱',lbl:'Equipe em campo',id:'compartilhamentos'},
-    {ic:'📍',lbl:'Pontos de ronda',id:'geocercas'},
+    {ic:'📍',lbl:'Pontos de ronda',id:'pontosronda'},
   ];
   if (APP_MODE === 'fleet') colaboradorTabs.push({ic:'✅',lbl:'Checklist',id:'checklist'});
 
@@ -545,6 +545,7 @@ function goTab(id, el) {
     equipe:     () => renderEquipe(c),
     geocercas:  () => renderGeocercas(c),
     checklist:  () => renderChecklist(c),
+    pontosronda: () => renderPontosRonda(c),
   };
   if (map_[id]) map_[id]();
 }
@@ -1182,6 +1183,10 @@ async function renderVeiculos(c) {
             badgeTxt = v.compartilhamento_id ? (v.tipo_rastreamento==='teste'?'⏰ Teste 7 dias':'📱 Permanente') : 'Demo';
             badgeColor = v.tipo_rastreamento==='teste' ? 'amber' : 'green';
             typeIcon = v.tipo_rastreamento==='teste' ? '⏰ Teste 7 dias' : '📱 Permanente';
+          } else if (!v.imei) {
+            badgeTxt = '🧮 Sem rastreador';
+            badgeColor = 'gray';
+            typeIcon = '🧮 Sem rastreador';
           }
 
           return `<div class="card">
@@ -1196,13 +1201,13 @@ async function renderVeiculos(c) {
             </div>
             <div class="kpis-row">
               <div class="kpi-box"><div class="v" style="color:var(--t2)">—</div><div class="l">km/h</div></div>
-              <div class="kpi-box"><div class="v">${isLink?'🔗':v.imei?'📡':'—'}</div><div class="l">${isLink?'Link':'IMEI'}</div></div>
+              <div class="kpi-box"><div class="v">${isLink?'🔗':v.imei?'📡':'—'}</div><div class="l">${isLink?'Link':v.imei?'IMEI':'—'}</div></div>
               <div class="kpi-box"><div class="v" style="font-size:10px;color:var(--t2)">${isLink?'ativo':'offline'}</div><div class="l">Status</div></div>
             </div>
             <div class="acts-row">
               <div class="act-btn" onclick="goTab('mapa');setTimeout(()=>openBS(${v.id}),300)">🗺 Ver no mapa</div>
               ${CU.role==='admin'?`<div class="act-btn blue" onclick="openEditVeiculo(${JSON.stringify(v).replace(/"/g,'&quot;')})">✏️ Editar</div>`:''}
-              ${isLink?`<div class="act-btn green" onclick="showDemoLink(${v.compartilhamento_id})">📋 Ver Link</div>`:`<div class="act-btn" onclick="toggleBlock(${v.id})">${v.bloqueado?'✅ Desbloquear':'🔒 Bloquear'}</div>`}
+              ${isLink?`<div class="act-btn green" onclick="showDemoLink(${v.compartilhamento_id})">📋 Ver Link</div>`:v.imei?`<div class="act-btn" onclick="toggleBlock(${v.id})">${v.bloqueado?'✅ Desbloquear':'🔒 Bloquear'}</div>`:''}
             </div>
           </div>`;
         }).join('')}
@@ -1214,6 +1219,8 @@ async function openAddVeiculo() {
   let clientes = [];
   try { clientes = await api('GET','/api/clientes'); } catch(e){}
   document.getElementById('mTitle').textContent = 'Adicionar veículo';
+  // Track é só rastreador real (IMEI); Fleet e admin também podem cadastrar sem rastreador (controle de custos)
+  const mostraSemRastreador = !(APP_MODE === 'track' && CU.role !== 'admin');
   document.getElementById('mBody').innerHTML = `
     <div class="mf"><label>Placa</label><input id="vPlaca" placeholder="ABC-1234" style="text-transform:uppercase"/></div>
     <div class="mf"><label>Tipo de Rastreamento</label>
@@ -1221,20 +1228,14 @@ async function openAddVeiculo() {
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px;background:var(--s2);border-radius:6px">
           <input type="radio" name="vTipo" value="imei" checked onchange="toggleVeiculoTipo()"/> 📡 <strong>Rastreador Real</strong> (IMEI)
         </label>
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px;background:var(--s2);border-radius:6px">
-          <input type="radio" name="vTipo" value="teste_7dias" onchange="toggleVeiculoTipo()"/> ⏰ <strong>Teste 7 Dias</strong> (Link temporário)
-        </label>
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px;background:var(--s2);border-radius:6px">
-          <input type="radio" name="vTipo" value="permanente" onchange="toggleVeiculoTipo()"/> 📱 <strong>Link Permanente</strong> (Celular forever)
-        </label>
+        ${mostraSemRastreador ? `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px;background:var(--s2);border-radius:6px">
+          <input type="radio" name="vTipo" value="sem_rastreador" onchange="toggleVeiculoTipo()"/> 🧮 <strong>Sem rastreador</strong> (Controle de custos)
+        </label>` : ''}
       </div>
     </div>
     <div class="mf" id="vImeiField"><label>IMEI do rastreador</label><input id="vImei" placeholder="Ex: 358899012345678"/></div>
-    <div id="vTesteInfo" style="display:none;font-size:12px;color:var(--t2);background:var(--s2);padding:12px;border-radius:8px;margin-bottom:12px">
-      ⏰ Link gerado automaticamente. Compartilhe com cliente - expira em 7 dias!
-    </div>
-    <div id="vPermanenteInfo" style="display:none;font-size:12px;color:var(--t2);background:var(--s2);padding:12px;border-radius:8px;margin-bottom:12px">
-      📱 Link permanente para rastreamento contínuo via celular. Sem equipamento, sem expiração!
+    <div id="vSemRastreadorInfo" style="display:none;font-size:12px;color:var(--t2);background:var(--s2);padding:12px;border-radius:8px;margin-bottom:12px">
+      🧮 Sem rastreamento por GPS. Use para controlar custos (combustível, manutenção etc.) de veículos sem equipamento instalado.
     </div>
     <div class="mf"><label>Modelo</label><input id="vModelo" placeholder="Ex: Fiat Strada"/></div>
     <div class="mf-row">
@@ -1254,8 +1255,7 @@ async function openAddVeiculo() {
 function toggleVeiculoTipo() {
   const tipo = document.querySelector('input[name="vTipo"]:checked').value;
   document.getElementById('vImeiField').style.display = tipo==='imei'?'block':'none';
-  document.getElementById('vTesteInfo').style.display = tipo==='teste_7dias'?'block':'none';
-  document.getElementById('vPermanenteInfo').style.display = tipo==='permanente'?'block':'none';
+  document.getElementById('vSemRastreadorInfo').style.display = tipo==='sem_rastreador'?'block':'none';
 }
 
 async function saveVeiculo() {
@@ -1272,42 +1272,18 @@ async function saveVeiculo() {
   if (!body.placa||!body.cliente_id) return toast('Placa e cliente são obrigatórios','err');
   try {
     const arquivoFoto = document.getElementById('vFoto')?.files[0];
-    let resultado;
     if (arquivoFoto) {
       const fd = new FormData();
       Object.entries(body).forEach(([k,v]) => fd.append(k, v ?? ''));
       fd.append('foto', arquivoFoto);
-      resultado = await apiUpload('POST','/api/veiculos',fd);
+      await apiUpload('POST','/api/veiculos',fd);
     } else {
-      resultado = await api('POST','/api/veiculos',body);
+      await api('POST','/api/veiculos',body);
     }
     closeModal();
-
-    if (resultado.demo_link) {
-      const titulo = tipo==='teste_7dias'?'⏰ Teste de 7 Dias Criado!':'📱 Link Permanente Gerado!';
-      const descricao = tipo==='teste_7dias'?'Link expira em 7 dias':'Link permanente, sem expiração';
-      document.getElementById('mTitle').textContent = titulo;
-      document.getElementById('mBody').innerHTML = `
-        <div style="text-align:center;padding:20px">
-          <div style="font-size:14px;color:var(--t2);margin-bottom:16px">
-            ✅ Veículo <strong>${body.placa}</strong> adicionado com sucesso!
-          </div>
-          <div style="background:var(--s2);padding:16px;border-radius:8px;margin-bottom:16px">
-            <div style="font-size:11px;color:var(--t3);margin-bottom:6px">${descricao.toUpperCase()}</div>
-            <div style="font-family:'JetBrains Mono',monospace;font-size:12px;word-break:break-all;background:var(--s1);padding:12px;border-radius:4px;margin-bottom:10px">${resultado.demo_link}</div>
-            <button class="mbtn" onclick="copyToClipboard('${resultado.demo_link}'); toast('Link copiado!','ok')">📋 Copiar Link</button>
-          </div>
-          <div style="font-size:12px;color:var(--t2);background:rgba(52,168,224,.1);padding:12px;border-radius:8px">
-            📲 Compartilhe este link com o cliente via WhatsApp ou Email<br>Cliente abre no celular e já começa a rastrear!
-          </div>
-          <button class="mbtn sec" onclick="closeModal(); renderVeiculos(document.getElementById('mainContent')); loadVehicles();" style="margin-top:16px">Concluído</button>
-        </div>`;
-      openModal();
-    } else {
-      toast(`${body.placa} adicionado com IMEI ✅`,'ok');
-      renderVeiculos(document.getElementById('mainContent'));
-      loadVehicles();
-    }
+    toast(`${body.placa} adicionado ${tipo==='imei'?'com IMEI ':''}✅`,'ok');
+    renderVeiculos(document.getElementById('mainContent'));
+    loadVehicles();
   } catch(e) { toast(e.message,'err'); }
 }
 
@@ -1703,6 +1679,141 @@ async function deleteGeocerca(id) {
     toast('Geocerca removida','ok');
     renderGeocercas(document.getElementById('mainContent'));
   } catch(e) { toast(e.message,'err'); }
+}
+
+/* ─── PATROL: PONTOS DE RONDA ─── */
+let prMiniMap = null, prMiniMarker = null, prMiniCircle = null, prLat = null, prLon = null, prEditId = null;
+let PONTOS_RONDA_CACHE = [];
+
+async function renderPontosRonda(c) {
+  c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
+  try {
+    const pontos = await api('GET','/api/patrol/pontos');
+    PONTOS_RONDA_CACHE = pontos;
+    c.innerHTML = `<div class="pp">
+      <div class="sec-title">Pontos de ronda <span style="color:var(--t2);font-size:11px;font-weight:400">${pontos.length}</span><button class="add-btn" onclick="openPontoRondaModal()">＋ Novo Ponto</button></div>
+      <div style="font-size:12px;color:var(--t2);margin-bottom:14px;padding:12px;background:var(--s2);border-radius:8px">
+        📍 Cadastre os pontos obrigatórios da ronda. O vigilante faz check-in pelo próprio celular (GPS), sem precisar de equipamento extra.
+      </div>
+      ${!pontos.length ? `<div class="empty"><div class="ei">📍</div><div class="et">Nenhum ponto de ronda criado</div><div class="es">Crie pontos (ex: portaria, almoxarifado, perímetro) para a equipe fazer check-in via GPS</div></div>` :
+        pontos.map(p => `<div class="card">
+          <div class="card-top">
+            <span style="font-size:18px">📍</span>
+            <div class="card-info">
+              <div class="card-title">${p.nome}</div>
+              <div class="card-sub">Raio de ${p.raio_metros >= 1000 ? (p.raio_metros/1000).toFixed(1)+' km' : p.raio_metros+' m'}</div>
+            </div>
+          </div>
+          <div class="acts-row">
+            <div class="act-btn" onclick="verHistoricoPonto(${p.id})">📋 Histórico</div>
+            <div class="act-btn blue" onclick='openPontoRondaModal(${JSON.stringify(p).replace(/'/g,"&#39;")})'>✏️ Editar</div>
+            <div class="act-btn red" onclick="if(confirm('Remover o ponto \\'${p.nome.replace(/'/g,"\\'")}\\'?'))deletePontoRonda(${p.id})">🗑 Remover</div>
+          </div>
+        </div>`).join('')}
+    </div>`;
+  } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+async function openPontoRondaModal(p) {
+  prEditId = p ? p.id : null;
+  prLat = p ? parseFloat(p.latitude) : null;
+  prLon = p ? parseFloat(p.longitude) : null;
+  document.getElementById('mTitle').textContent = p ? 'Editar Ponto de Ronda' : 'Novo Ponto de Ronda';
+  document.getElementById('mBody').innerHTML = `
+    <div class="mf"><label>Nome do ponto</label><input id="prNome" placeholder="Ex: Portaria principal" value="${p ? p.nome.replace(/"/g,'&quot;') : ''}"/></div>
+    <div class="mf"><label>Raio de tolerância: <span id="prRaioLbl">${p ? p.raio_metros : 100}</span> m</label>
+      <input type="range" id="prRaio" min="10" max="5000" step="10" value="${p ? p.raio_metros : 100}" style="width:100%" oninput="document.getElementById('prRaioLbl').textContent=this.value; prAtualizarCirculo();"/>
+    </div>
+    <div class="mf"><label>Localização do ponto</label>
+      <button class="mbtn sec" type="button" onclick="prUsarLocalizacaoAtual()" style="margin-bottom:8px">📍 Usar minha localização atual</button>
+      <div id="prMiniMap" style="width:100%;height:200px;border-radius:8px;overflow:hidden;border:1px solid var(--b1)"></div>
+      <div style="font-size:11px;color:var(--t2);margin-top:6px" id="prCoordLbl">${prLat!=null ? prLat.toFixed(5)+', '+prLon.toFixed(5) : 'Clique no mapa ou use sua localização atual'}</div>
+    </div>
+    <button class="mbtn" onclick="savePontoRonda()">Salvar Ponto</button>`;
+  openModal();
+  requestAnimationFrame(() => requestAnimationFrame(() => prInitMiniMap()));
+}
+
+function prInitMiniMap() {
+  if (prMiniMap) { prMiniMap.remove(); prMiniMap = null; prMiniMarker = null; prMiniCircle = null; }
+  const el = document.getElementById('prMiniMap');
+  if (!el) return;
+  const center = prLat != null ? [prLat, prLon] : [-23.549, -46.638];
+  prMiniMap = L.map('prMiniMap', { attributionControl:false }).setView(center, prLat != null ? 16 : 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(prMiniMap);
+  prMiniMap.on('click', e => {
+    prLat = e.latlng.lat; prLon = e.latlng.lng;
+    document.getElementById('prCoordLbl').textContent = prLat.toFixed(5)+', '+prLon.toFixed(5);
+    prAtualizarCirculo();
+  });
+  if (prLat != null) prAtualizarCirculo();
+  setTimeout(() => prMiniMap && prMiniMap.invalidateSize(), 150);
+}
+
+function prAtualizarCirculo() {
+  if (!prMiniMap || prLat == null) return;
+  const raio = parseInt(document.getElementById('prRaio').value);
+  if (prMiniMarker) prMiniMap.removeLayer(prMiniMarker);
+  if (prMiniCircle) prMiniMap.removeLayer(prMiniCircle);
+  prMiniMarker = L.marker([prLat, prLon]).addTo(prMiniMap);
+  prMiniCircle = L.circle([prLat, prLon], { radius: raio, color:'#D91A1A', fillColor:'#D91A1A', fillOpacity:0.15 }).addTo(prMiniMap);
+  prMiniMap.fitBounds(prMiniCircle.getBounds(), { maxZoom: 17 });
+}
+
+function prUsarLocalizacaoAtual() {
+  if (!navigator.geolocation) return toast('Geolocalização não disponível neste navegador','err');
+  toast('Obtendo localização...','ok');
+  navigator.geolocation.getCurrentPosition(pos => {
+    prLat = pos.coords.latitude; prLon = pos.coords.longitude;
+    document.getElementById('prCoordLbl').textContent = prLat.toFixed(5)+', '+prLon.toFixed(5);
+    if (!prMiniMap) prInitMiniMap(); else { prMiniMap.setView([prLat,prLon],16); prAtualizarCirculo(); }
+  }, err => toast('Não foi possível obter sua localização: '+err.message,'err'), { enableHighAccuracy:true, timeout:10000 });
+}
+
+async function savePontoRonda() {
+  const nome = document.getElementById('prNome').value.trim();
+  const raio_metros = parseInt(document.getElementById('prRaio').value);
+  if (!nome) return toast('Nome é obrigatório','err');
+  if (prLat == null) return toast('Defina a localização do ponto','err');
+  const body = { nome, latitude: prLat, longitude: prLon, raio_metros };
+  try {
+    if (prEditId) await api('PUT', `/api/patrol/pontos/${prEditId}`, body);
+    else await api('POST', '/api/patrol/pontos', body);
+    toast('Ponto de ronda salvo ✅','ok');
+    closeModal();
+    renderPontosRonda(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function deletePontoRonda(id) {
+  try {
+    await api('DELETE', `/api/patrol/pontos/${id}`);
+    toast('Ponto removido','ok');
+    renderPontosRonda(document.getElementById('mainContent'));
+  } catch(e) { toast(e.message,'err'); }
+}
+
+async function verHistoricoPonto(id) {
+  const ponto = PONTOS_RONDA_CACHE.find(p => p.id === id);
+  document.getElementById('mTitle').textContent = 'Histórico — ' + (ponto ? ponto.nome : 'Ponto');
+  document.getElementById('mBody').innerHTML = `<div class="loading"><div class="spinner"></div>Carregando…</div>`;
+  openModal();
+  try {
+    const checkins = await api('GET', `/api/patrol/checkins?ponto_id=${id}`);
+    document.getElementById('mBody').innerHTML = !checkins.length
+      ? `<div class="empty"><div class="ei">📋</div><div class="et">Nenhum check-in registrado ainda</div></div>`
+      : checkins.map(ck => {
+          const d = new Date(ck.criado_em);
+          const data = d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'});
+          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--b1)">
+            <div>
+              <div style="font-size:13px">${ck.vigilante_nome || 'Vigilante'}</div>
+              <div style="font-size:11px;color:var(--t2)">${data} · ${parseFloat(ck.distancia_metros).toFixed(0)}m do ponto</div>
+            </div>
+            <span class="badge badge-${ck.dentro_raio?'green':'amber'}">${ck.dentro_raio?'✅ No ponto':'⚠️ Fora do raio'}</span>
+          </div>`;
+        }).join('');
+  } catch(e) { document.getElementById('mBody').innerHTML = `<div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div>`; }
 }
 
 /* ─── FINANCEIRO ─── */

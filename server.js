@@ -1026,6 +1026,31 @@ async function initDB() {
     criado_em TIMESTAMP DEFAULT NOW()
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_fleet_checklist_exec_veiculo ON fleet_checklist_execucoes (veiculo_id, criado_em DESC)`);
+  // Felogix Patrol: pontos de ronda (checkpoints fixos) + checkins do vigilante via GPS do celular
+  await pool.query(`CREATE TABLE IF NOT EXISTS patrol_pontos (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+    nome VARCHAR(150) NOT NULL,
+    latitude DECIMAL(10,8) NOT NULL,
+    longitude DECIMAL(11,8) NOT NULL,
+    raio_metros INTEGER DEFAULT 100,
+    ativo BOOLEAN DEFAULT true,
+    criado_em TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_patrol_pontos_cliente ON patrol_pontos (cliente_id)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS patrol_checkins (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+    ponto_id INTEGER REFERENCES patrol_pontos(id) ON DELETE CASCADE,
+    compartilhamento_id INTEGER REFERENCES rastreadores_compartilhados(id) ON DELETE CASCADE,
+    latitude DECIMAL(10,8),
+    longitude DECIMAL(11,8),
+    distancia_metros DECIMAL(10,2),
+    dentro_raio BOOLEAN,
+    criado_em TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_patrol_checkins_ponto ON patrol_checkins (ponto_id, criado_em DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_patrol_checkins_comp ON patrol_checkins (compartilhamento_id, criado_em DESC)`);
   // Conta de teste (gestor) — visualizar Track/Connect/Fleet/Patrol como cliente, sem usar o login admin
   // (precisa existir ANTES do seed de itens de checklist abaixo, para já nascer com o template padrão)
   await pool.query(
@@ -1290,23 +1315,12 @@ app.post('/api/veiculos', auth, adminOnly, uploadFoto, async (req, res) => {
   if (!/^[A-Z0-9\-]{4,10}$/i.test(placa)) return res.status(400).json({ erro: 'Placa inválida' });
   if (tipo === 'imei' && !imei) return res.status(400).json({ erro: 'IMEI é obrigatório para rastreador real' });
   try {
-    let compartilhamento_id = null;
     const foto = req.file ? '/uploads/' + req.file.filename : null;
 
-    // Se for teste (7 dias) ou permanente, gera link automático
-    if (tipo === 'teste_7dias' || tipo === 'permanente') {
-      const token = crypto.randomBytes(24).toString('hex');
-      const expiraEm = tipo === 'teste_7dias' ? new Date(Date.now() + 7*24*60*60*1000) : null;
-      const comp = await pool.query(
-        'INSERT INTO rastreadores_compartilhados (cliente_id, token, nome, tipo, expira_em, ativo, foto) VALUES ($1, $2, $3, $4, $5, true, $6) RETURNING *',
-        [parseInt(cliente_id), token, placa.trim(), tipo === 'teste_7dias' ? 'teste' : 'permanente', expiraEm, foto]
-      );
-      compartilhamento_id = comp.rows[0].id;
-    }
-
+    // Cadastro sem rastreador (Fleet: só controle de custos, sem GPS) ou com IMEI real
     const r = await pool.query(
-      'INSERT INTO veiculos (cliente_id,placa,imei,modelo,ano,cor,compartilhamento_id,foto) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
-      [parseInt(cliente_id), placa.toUpperCase().trim(), tipo==='imei'?imei?.trim():null, modelo?.trim()||'Veículo', parseInt(ano)||2024, cor?.trim()||'—', compartilhamento_id, foto]
+      'INSERT INTO veiculos (cliente_id,placa,imei,modelo,ano,cor,foto) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+      [parseInt(cliente_id), placa.toUpperCase().trim(), tipo==='imei'?imei?.trim():null, modelo?.trim()||'Veículo', parseInt(ano)||2024, cor?.trim()||'—', foto]
     );
 
     // Vincula ao deviceId do Traccar pelo IMEI real, sem bloquear a resposta
@@ -1317,15 +1331,7 @@ app.post('/api/veiculos', auth, adminOnly, uploadFoto, async (req, res) => {
       }).catch(() => {});
     }
 
-    // Retorna com link se for teste ou permanente
-    const resultado = r.rows[0];
-    if (tipo !== 'imei') {
-      const comp = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE id=$1', [compartilhamento_id]);
-      resultado.demo_link = `${process.env.BASE_URL || 'https://felogix.com.br'}/track/${comp.rows[0].token}`;
-      resultado.link_tipo = tipo === 'teste_7dias' ? '⏰ Teste 7 dias' : '📱 Link Permanente';
-    }
-
-    res.json(resultado);
+    res.json(r.rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ erro: 'Placa já cadastrada' });
     console.error('Erro ao adicionar veículo:', err);
@@ -1519,6 +1525,115 @@ app.get('/api/fleet/checklist-execucoes', auth, async (req, res) => {
     );
     res.json(r.rows);
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+/* ─── PATROL: pontos de ronda (checkpoints) e histórico de checkins ─── */
+app.get('/api/patrol/pontos', auth, async (req, res) => {
+  let clienteId;
+  if (req.user.role === 'admin') {
+    clienteId = parseInt(req.query.cliente_id);
+    if (!clienteId) return res.status(400).json({ erro: 'cliente_id é obrigatório' });
+  } else if (req.user.role === 'colaborador') {
+    clienteId = req.user.clienteId;
+  } else {
+    clienteId = req.user.id;
+  }
+  const r = await pool.query(
+    'SELECT * FROM patrol_pontos WHERE cliente_id=$1 AND ativo=true ORDER BY nome',
+    [clienteId]
+  );
+  res.json(r.rows);
+});
+
+app.post('/api/patrol/pontos', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const { nome, latitude, longitude, raio_metros, cliente_id } = req.body;
+  const lat = parseFloat(latitude), lon = parseFloat(longitude);
+  const raio = parseInt(raio_metros) || 100;
+  if (!nome || !isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) return res.status(400).json({ erro: 'Latitude inválida' });
+  if (!Number.isFinite(lon) || lon < -180 || lon > 180) return res.status(400).json({ erro: 'Longitude inválida' });
+  if (!Number.isInteger(raio) || raio < 10 || raio > 5000) return res.status(400).json({ erro: 'Raio deve ser entre 10 e 5000 metros' });
+  let clienteId;
+  if (req.user.role === 'admin') {
+    clienteId = parseInt(cliente_id);
+    if (!clienteId) return res.status(400).json({ erro: 'cliente_id é obrigatório' });
+  } else {
+    clienteId = req.user.id;
+  }
+  try {
+    const r = await pool.query(
+      'INSERT INTO patrol_pontos (cliente_id,nome,latitude,longitude,raio_metros) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+      [clienteId, nome.trim(), lat, lon, raio]
+    );
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.put('/api/patrol/pontos/:id', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const atual = await pool.query('SELECT cliente_id FROM patrol_pontos WHERE id=$1', [id]);
+  if (!atual.rows.length) return res.status(404).json({ erro: 'Ponto não encontrado' });
+  if (req.user.role !== 'admin' && atual.rows[0].cliente_id !== req.user.id)
+    return res.status(403).json({ erro: 'Sem permissão para este ponto' });
+  const { nome, latitude, longitude, raio_metros, ativo } = req.body;
+  try {
+    const sets = []; const vals = []; let i = 1;
+    if (nome !== undefined) {
+      if (!isSafe(nome)) return res.status(400).json({ erro: 'Nome inválido' });
+      sets.push(`nome=$${i++}`); vals.push(nome.trim());
+    }
+    if (latitude !== undefined) {
+      const lat = parseFloat(latitude);
+      if (!Number.isFinite(lat) || lat < -90 || lat > 90) return res.status(400).json({ erro: 'Latitude inválida' });
+      sets.push(`latitude=$${i++}`); vals.push(lat);
+    }
+    if (longitude !== undefined) {
+      const lon = parseFloat(longitude);
+      if (!Number.isFinite(lon) || lon < -180 || lon > 180) return res.status(400).json({ erro: 'Longitude inválida' });
+      sets.push(`longitude=$${i++}`); vals.push(lon);
+    }
+    if (raio_metros !== undefined) {
+      const raio = parseInt(raio_metros);
+      if (!Number.isInteger(raio) || raio < 10 || raio > 5000) return res.status(400).json({ erro: 'Raio deve ser entre 10 e 5000 metros' });
+      sets.push(`raio_metros=$${i++}`); vals.push(raio);
+    }
+    if (ativo !== undefined) { sets.push(`ativo=$${i++}`); vals.push(!!ativo); }
+    if (!sets.length) return res.status(400).json({ erro: 'Nada a atualizar' });
+    vals.push(id);
+    const r = await pool.query(`UPDATE patrol_pontos SET ${sets.join(',')} WHERE id=$${i} RETURNING *`, vals);
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.delete('/api/patrol/pontos/:id', auth, async (req, res) => {
+  if (req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(400).json({ erro: 'ID inválido' });
+  const atual = await pool.query('SELECT cliente_id FROM patrol_pontos WHERE id=$1', [id]);
+  if (!atual.rows.length) return res.status(404).json({ erro: 'Ponto não encontrado' });
+  if (req.user.role !== 'admin' && atual.rows[0].cliente_id !== req.user.id)
+    return res.status(403).json({ erro: 'Sem permissão para este ponto' });
+  await pool.query('DELETE FROM patrol_pontos WHERE id=$1', [id]);
+  res.json({ ok: true });
+});
+
+app.get('/api/patrol/checkins', auth, async (req, res) => {
+  const pontoId = parseInt(req.query.ponto_id);
+  if (!pontoId) return res.status(400).json({ erro: 'ponto_id é obrigatório' });
+  const ponto = await pool.query('SELECT cliente_id FROM patrol_pontos WHERE id=$1', [pontoId]);
+  if (!ponto.rows.length) return res.status(404).json({ erro: 'Ponto não encontrado' });
+  if (req.user.role !== 'admin' && ponto.rows[0].cliente_id !== req.user.id)
+    return res.status(403).json({ erro: 'Sem permissão para este ponto' });
+  const r = await pool.query(
+    `SELECT ck.*, rc.nome AS vigilante_nome FROM patrol_checkins ck
+     LEFT JOIN rastreadores_compartilhados rc ON rc.id = ck.compartilhamento_id
+     WHERE ck.ponto_id=$1 ORDER BY ck.criado_em DESC LIMIT 50`,
+    [pontoId]
+  );
+  res.json(r.rows);
 });
 
 /* ─── GRUPOS DE VEÍCULOS (apenas clientes CNPJ) ─── */
@@ -2092,6 +2207,47 @@ app.get('/api/track/:token/grupo', async (req, res) => {
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
+/* ─── PATROL: pontos de ronda próximos e checkin pelo link público do vigilante ─── */
+app.get('/api/track/:token/pontos-proximos', async (req, res) => {
+  try {
+    const own = await pool.query('SELECT cliente_id FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    if (!own.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
+    const lat = parseFloat(req.query.lat), lon = parseFloat(req.query.lon);
+    const r = await pool.query(
+      'SELECT id, nome, latitude, longitude, raio_metros FROM patrol_pontos WHERE cliente_id=$1 AND ativo=true',
+      [own.rows[0].cliente_id]
+    );
+    const pontos = r.rows.map(p => ({
+      ...p,
+      distancia_metros: Number.isFinite(lat) && Number.isFinite(lon)
+        ? Math.round(distanciaMetros(lat, lon, parseFloat(p.latitude), parseFloat(p.longitude)))
+        : null
+    }));
+    res.json(pontos);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.post('/api/track/:token/checkin', async (req, res) => {
+  const { ponto_id, latitude, longitude } = req.body;
+  const lat = parseFloat(latitude), lon = parseFloat(longitude);
+  const pontoId = parseInt(ponto_id);
+  if (!pontoId || !Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ erro: 'Dados inválidos' });
+  try {
+    const own = await pool.query('SELECT id, cliente_id FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    if (!own.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
+    const ponto = await pool.query('SELECT * FROM patrol_pontos WHERE id=$1 AND cliente_id=$2 AND ativo=true', [pontoId, own.rows[0].cliente_id]);
+    if (!ponto.rows.length) return res.status(404).json({ erro: 'Ponto de ronda não encontrado' });
+    const distancia = distanciaMetros(lat, lon, parseFloat(ponto.rows[0].latitude), parseFloat(ponto.rows[0].longitude));
+    const dentroRaio = distancia <= ponto.rows[0].raio_metros;
+    const r = await pool.query(
+      `INSERT INTO patrol_checkins (cliente_id,ponto_id,compartilhamento_id,latitude,longitude,distancia_metros,dentro_raio)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [own.rows[0].cliente_id, pontoId, own.rows[0].id, lat, lon, distancia, dentroRaio]
+    );
+    res.json(r.rows[0]);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
 /* ─── ALERTAS ─── */
 app.get('/api/alertas', auth, async (req, res) => {
   if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.json({});
@@ -2451,6 +2607,12 @@ app.get('/track/:token', async (req, res) => {
     .group-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     .group-dot.online { background: #4CAF50; }
     .group-dot.offline { background: #999; }
+    .point-item { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid #eee; }
+    .point-item:first-child { border-top: none; }
+    .point-name { flex: 1; color: #222; }
+    .point-dist { font-size: 11px; color: #888; }
+    .point-btn { background: #1976D2; color: white; border: none; padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; }
+    .point-btn:disabled { background: #aaa; }
   </style>
 </head>
 <body>
@@ -2484,6 +2646,10 @@ app.get('/track/:token', async (req, res) => {
       <div class="groupPanel" id="groupPanel" style="display:none">
         <div class="groupPanel-head">👨‍👩‍👧 Pessoas do grupo</div>
         <div id="groupList"></div>
+      </div>
+      <div class="groupPanel" id="pointsPanel" style="display:none">
+        <div class="groupPanel-head">📍 Pontos de ronda próximos</div>
+        <div id="pointsList"></div>
       </div>
     </div>
     <div id="map"></div>
@@ -2538,6 +2704,45 @@ app.get('/track/:token', async (req, res) => {
       } catch (e) {}
     }
 
+    async function loadPontos() {
+      try {
+        const url = curLat != null ? \`/api/track/\${TOKEN}/pontos-proximos?lat=\${curLat}&lon=\${curLon}\` : \`/api/track/\${TOKEN}/pontos-proximos\`;
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const pontos = await resp.json();
+        const panel = document.getElementById('pointsPanel');
+        const list = document.getElementById('pointsList');
+        if (!Array.isArray(pontos) || !pontos.length) { panel.style.display = 'none'; return; }
+        pontos.sort((a, b) => (a.distancia_metros ?? Infinity) - (b.distancia_metros ?? Infinity));
+        panel.style.display = 'block';
+        list.innerHTML = pontos.map(p => {
+          const dist = p.distancia_metros != null ? Math.round(p.distancia_metros) + 'm' : '—';
+          return \`<div class="point-item">
+            <div class="point-name">\${escHtml(p.nome)}<div class="point-dist">\${dist} de distância</div></div>
+            <button class="point-btn" onclick="fazerCheckin(\${p.id}, this)">✅ Check-in</button>
+          </div>\`;
+        }).join('');
+      } catch (e) {}
+    }
+
+    async function fazerCheckin(pontoId, btn) {
+      if (curLat == null) return alert('Aguarde o GPS ativar antes de fazer o check-in.');
+      btn.disabled = true; btn.textContent = 'Enviando...';
+      try {
+        const resp = await fetch(\`/api/track/\${TOKEN}/checkin\`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ponto_id: pontoId, latitude: curLat, longitude: curLon })
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.erro || 'Erro ao fazer check-in');
+        btn.textContent = data.dentro_raio ? '✅ Check-in feito!' : '⚠️ Fora do raio';
+      } catch (e) {
+        alert(e.message);
+        btn.disabled = false; btn.textContent = '✅ Check-in';
+      }
+    }
+
     async function salvarPerfil() {
       const btn = document.getElementById('btnSalvarPerfil');
       const nome = document.getElementById('inpNome').value.trim();
@@ -2569,7 +2774,7 @@ app.get('/track/:token', async (req, res) => {
       new ResizeObserver(() => map.invalidateSize()).observe(document.querySelector('.container'));
     }
 
-    let marker = null, watching = false, watchId = null;
+    let marker = null, watching = false, watchId = null, curLat = null, curLon = null;
 
     function updateMap(lat, lon) {
       if (!marker) {
@@ -2607,6 +2812,7 @@ app.get('/track/:token', async (req, res) => {
           const lon = pos.coords.longitude;
           const acc = pos.coords.accuracy;
           const spd = pos.coords.speed;
+          curLat = lat; curLon = lon;
 
           updateMap(lat, lon);
           document.getElementById('accuracyTxt').textContent = 'Precisão: ' + Math.round(acc) + 'm';
@@ -2657,7 +2863,9 @@ app.get('/track/:token', async (req, res) => {
     document.getElementById('btnStart').onclick = () => watching ? stopTracking() : startTracking();
     startTracking();
     loadGrupo();
+    loadPontos();
     setInterval(loadGrupo, 15000);
+    setInterval(loadPontos, 15000);
   </script>
 </body>
 </html>`);

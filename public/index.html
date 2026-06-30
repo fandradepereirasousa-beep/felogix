@@ -911,6 +911,9 @@ function openBSPerson(id) {
 
 async function toggleBlock(id) {
   const v = VEHICLES.find(x => x.id===id); if (!v) return;
+  const acao = v.bloqueado ? 'desbloquear a ignição' : 'BLOQUEAR a ignição';
+  const aviso = v.bloqueado ? '' : '\n\n⚠️ Certifique-se de que o veículo está parado.';
+  if (!confirm(`Confirmar: ${acao} de ${v.placa}?${aviso}`)) return;
   try {
     await api('PUT', `/api/veiculos/${id}`, { bloqueado: !v.bloqueado });
     v.bloqueado = !v.bloqueado;
@@ -1162,7 +1165,7 @@ async function renderVeiculos(c) {
   c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
   try {
     const vs = await api('GET','/api/veiculos');
-    VEHICLES = vs.map(v => ({ ...v, status: v.bloqueado?'blocked':'offline', speed:0, lat:-23.55+Math.random()*.08, lng:-46.63+Math.random()*.08, ignition:false, updated:'offline' }));
+    VEHICLES = vs.map(v => ({ ...v, status: v.bloqueado?'blocked':'offline', speed:0, lat:null, lng:null, ignition:false, updated:'offline' }));
     const addBtn = CU.role==='admin' ? `<button class="add-btn" onclick="openAddVeiculo()">＋ Veículo</button>` : '';
     c.innerHTML = `<div class="pp">
       <div class="sec-title">Veículos <span style="color:var(--t2);font-size:11px;font-weight:400">${vs.length}</span>${addBtn}</div>

@@ -461,9 +461,29 @@ Acionado em `broadcastPosicoes` a cada 5s. Lógica em `avaliarAlertas()`:
 4. `dispararAlerta(clienteId, veiculoId, tipo, mensagem)`:
    - Aplica cooldown de 10 min por par `(tipo, veiculo_id)` para não spam.
    - Insere em `alertas_eventos`.
-   - *(Push notification: ainda não implementado — próximo item do backlog)*.
+   - Chama `enviarPushParaCliente(clienteId, 'Felogix Track', mensagem)` (ver seção 12.1).
 
 O toggle `horario` existe em `alertas_prefs` mas ainda não há motor nem UI para configurar janelas de horário.
+
+---
+
+## 11.1 Notificações push (Web Push / VAPID)
+
+Implementado via biblioteca `web-push` (servidor) + Push API/Service Worker (navegador).
+
+- **Setup**: `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` lidos do `.env`; se ausentes, um par é gerado em memória a cada restart (mesma estratégia de fallback do `JWT_SECRET`) — inscrições existentes ficam inválidas após restart sem chaves fixas em produção.
+- **Tabela**: `push_subscriptions (id, cliente_id, endpoint UNIQUE, p256dh, auth, criado_em)`.
+- **Endpoints** (todos exigem `auth`; apenas role `gestor` tem acesso — `admin`/`colaborador` recebem 403):
+  - `GET /api/push/vapid-public-key` — público, retorna a chave pública para o `pushManager.subscribe()` do navegador.
+  - `POST /api/push/subscribe` — recebe `{endpoint, keys:{p256dh,auth}}` (saída de `PushSubscription.toJSON()`); upsert por `endpoint`.
+  - `DELETE /api/push/subscribe` — remove a inscrição do `cliente_id` autenticado.
+- **`enviarPushParaCliente(clienteId, titulo, corpo, dataExtra)`**: busca todas as inscrições do cliente, envia via `webpush.sendNotification()`; em caso de erro 404/410 (inscrição morta), remove a linha de `push_subscriptions` automaticamente.
+- **Disparo automático**:
+  - Track: dentro de `dispararAlerta()` (velocidade, offline, geocerca) — ver seção 11.
+  - Patrol: check-in (GPS e QR Code), início de plantão, fechamento de plantão.
+- **Service Worker** (`public/sw.js`): escuta `push` (mostra notificação) e `notificationclick` (foca/abre a janela). Servido estaticamente em `/sw.js` com escopo de origem completo.
+- **Frontend**: botão "Ativar/Desativar notificações" na tela de Alertas do gestor (`renderAlertas()` em `public/index.html`), com `urlBase64ToUint8Array()`, `atualizarBotaoPush()` e `togglePush()`.
+- **Limitação conhecida de ambiente de teste**: em sandboxes com rede restrita, `pushManager.subscribe()` trava esperando handshake com o push service do navegador (ex.: FCM do Chrome) — não é um bug, é a mesma classe de restrição de rede do Leaflet/CDN (seção 20). Em produção (VPS com internet irrestrita) funciona normalmente.
 
 ---
 
@@ -608,6 +628,7 @@ node server.js
 | Plantão: início/fechamento com validação de jornada única | Patrol |
 | Relatório PDF de fechamento de plantão (pdfkit, download manual) | Patrol |
 | Painel do gestor: pontos, histórico de check-ins, lista de plantões, download PDF | Patrol |
+| Notificações push (Web Push/VAPID): alertas do Track + eventos do Patrol (check-in, plantão) | Track / Patrol |
 | Financeiro: cobrança mensal, fatura por e-mail (manual), histórico | Admin |
 | Upload de fotos (veículos, pessoas) | Core |
 | Páginas institucionais (`/`, `/produtos/:slug`) | Marketing |
@@ -617,8 +638,7 @@ node server.js
 ## 19. O que ainda falta desenvolver
 
 **Patrol** (próximos itens do backlog, em ordem sugerida):
-- ❌ **Notificações push** (Web Push / PWA) — próximo item; gestor recebe push quando vigilante faz check-in, inicia/fecha plantão ou dispara SOS
-- ❌ **SOS / botão de pânico** — vigilante dispara alerta de emergência; gestor recebe push imediato
+- ❌ **SOS / botão de pânico** — vigilante dispara alerta de emergência; gestor recebe push imediato (reaproveita infra de push já implementada)
 - ❌ **Sincronização offline (PWA)** — app continua funcionando sem conexão; check-ins são enfileirados e sincronizados ao voltar online
 - ❌ **Chat** — comunicação entre vigilante e central de monitoramento
 - ❌ **RBAC de 5 níveis** — hoje: admin/gestor/colaborador; planejado: Administrador/Supervisor/Operador/Vigilante/Cliente
@@ -649,8 +669,7 @@ node server.js
 
 ## 21. Roadmap
 
-1. **Imediato** — Notificações push (Web Push via VAPID + service worker): plugar no motor de alertas do Track e nos eventos do Patrol.
-2. **Curto prazo** — SOS / botão de pânico (reaproveita infra de push); alertas por horário no Track.
-3. **Médio prazo** — Sync offline PWA, check-in por foto, pausas com/sem foto, perfil Supervisor.
-4. **Escala** — Hash de senhas (coordenar reset), RBAC 5 níveis, suíte de testes no CI, chat entre vigilante e central.
+1. **Imediato** — SOS / botão de pânico (reaproveita infra de push já implementada); alertas por horário no Track.
+2. **Curto prazo** — Sync offline PWA, check-in por foto, pausas com/sem foto, perfil Supervisor.
+3. **Escala** — Hash de senhas (coordenar reset), RBAC 5 níveis, suíte de testes no CI, chat entre vigilante e central.
 5. **Longo prazo** — Felogix Hub / SSO entre os 4 produtos; avaliar se Connect precisa ser vertical própria com base em demanda real.

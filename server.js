@@ -448,7 +448,7 @@ function gerarSenha() {
   return Array.from({length: 10}, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
-// Hash de senha de acesso aos links de rastreamento (independente do login do dashboard)
+// Hash de senhas (usado para links de rastreamento e agora também para login do dashboard)
 function hashSenha(senha) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(senha, salt, 64).toString('hex');
@@ -461,6 +461,15 @@ function verificarSenha(senha, armazenada) {
   const hashBuf = Buffer.from(hash, 'hex');
   const testBuf = crypto.scryptSync(senha, salt, 64);
   return hashBuf.length === testBuf.length && crypto.timingSafeEqual(hashBuf, testBuf);
+}
+// Verificação de senha do dashboard com migração automática de texto puro para hash.
+// Retorna { ok, eraTextoPlano } para que o caller possa re-hash imediatamente.
+function verificarSenhaLogin(input, armazenada) {
+  const partes = armazenada ? armazenada.split(':') : [];
+  if (partes.length === 2 && partes[1].length === 128) {
+    return { ok: verificarSenha(input, armazenada), eraTextoPlano: false };
+  }
+  return { ok: input === armazenada, eraTextoPlano: true };
 }
 function getCookie(req, name) {
   const raw = req.headers.cookie;
@@ -1111,7 +1120,7 @@ async function initDB() {
     `INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
      VALUES ('cpf','000.000.000-01','Felipe (Teste Gestor)',$1,$2,'cortesia',true)
      ON CONFLICT (email) DO NOTHING`,
-    ['fandradepereirasousa@gmail.com', ADMIN_PASS]
+    ['fandradepereirasousa@gmail.com', hashSenha(ADMIN_PASS)]
   );
   // Template padrão de checklist (itens comuns de pré/pós-viagem) — cliente pode editar depois
   await pool.query(`
@@ -1155,7 +1164,8 @@ app.post('/api/login', rateLimit(10, 60000), async (req, res) => {
         return res.status(401).json({ erro: 'Conta temporariamente bloqueada. Tente em 15 minutos.' });
       }
 
-      if (c.senha !== senha) {
+      const chkC = verificarSenhaLogin(senha, c.senha);
+      if (!chkC.ok) {
         const tentativas = (c.tentativas_login || 0) + 1;
         const bloqueio = tentativas >= 5 ? new Date(Date.now() + 15*60*1000) : null;
         await pool.query('UPDATE clientes SET tentativas_login=$1, bloqueado_ate=$2 WHERE id=$3', [tentativas, bloqueio, c.id]);
@@ -1164,8 +1174,12 @@ app.post('/api/login', rateLimit(10, 60000), async (req, res) => {
         return res.status(401).json({ erro: msg });
       }
 
-      // Login ok — reseta tentativas
-      await pool.query('UPDATE clientes SET tentativas_login=0, bloqueado_ate=NULL WHERE id=$1', [c.id]);
+      // Login ok — reseta tentativas e migra senha de texto puro para hash na primeira vez
+      const updateCliente = chkC.eraTextoPlano
+        ? 'UPDATE clientes SET tentativas_login=0, bloqueado_ate=NULL, senha=$2 WHERE id=$1'
+        : 'UPDATE clientes SET tentativas_login=0, bloqueado_ate=NULL WHERE id=$1';
+      const paramsCliente = chkC.eraTextoPlano ? [c.id, hashSenha(senha)] : [c.id];
+      await pool.query(updateCliente, paramsCliente);
       await logAcesso(true);
       const token = jwt.sign({ id: c.id, role: 'gestor', nome: c.nome, empresa: c.nome, tipo: c.tipo }, JWT_SECRET, { expiresIn: '12h' });
       const initials = c.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
@@ -1185,7 +1199,8 @@ app.post('/api/login', rateLimit(10, 60000), async (req, res) => {
       return res.status(401).json({ erro: 'Conta temporariamente bloqueada. Tente em 15 minutos.' });
     }
 
-    if (col.senha !== senha) {
+    const chkCol = verificarSenhaLogin(senha, col.senha);
+    if (!chkCol.ok) {
       const tentativas = (col.tentativas_login || 0) + 1;
       const bloqueio = tentativas >= 5 ? new Date(Date.now() + 15*60*1000) : null;
       await pool.query('UPDATE colaboradores SET tentativas_login=$1, bloqueado_ate=$2 WHERE id=$3', [tentativas, bloqueio, col.id]);
@@ -1194,7 +1209,11 @@ app.post('/api/login', rateLimit(10, 60000), async (req, res) => {
       return res.status(401).json({ erro: msg });
     }
 
-    await pool.query('UPDATE colaboradores SET tentativas_login=0, bloqueado_ate=NULL WHERE id=$1', [col.id]);
+    const updateCol = chkCol.eraTextoPlano
+      ? 'UPDATE colaboradores SET tentativas_login=0, bloqueado_ate=NULL, senha=$2 WHERE id=$1'
+      : 'UPDATE colaboradores SET tentativas_login=0, bloqueado_ate=NULL WHERE id=$1';
+    const paramsCol = chkCol.eraTextoPlano ? [col.id, hashSenha(senha)] : [col.id];
+    await pool.query(updateCol, paramsCol);
     await logAcesso(true);
     const token = jwt.sign({ id: col.id, role: 'colaborador', clienteId: col.cliente_id, grupoId: col.grupo_id, nome: col.nome, empresa: col.empresa_nome }, JWT_SECRET, { expiresIn: '12h' });
     const initials = col.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
@@ -1211,7 +1230,7 @@ app.post('/api/esqueci-senha', rateLimit(3, 300000), async (req, res) => {
     // Sempre retorna ok pra não revelar emails cadastrados
     if (r.rows.length) {
       const nova = gerarSenha();
-      await pool.query('UPDATE clientes SET senha=$1, tentativas_login=0, bloqueado_ate=NULL WHERE email=$2', [nova, email]);
+      await pool.query('UPDATE clientes SET senha=$1, tentativas_login=0, bloqueado_ate=NULL WHERE email=$2', [hashSenha(nova), email]);
       await sendMail(email, 'Sua nova senha — Felogix',
         `<div style="font-family:sans-serif;max-width:480px;margin:auto">
           <h2 style="color:#D91A1A">Felogix</h2>
@@ -1236,9 +1255,9 @@ app.post('/api/alterar-senha', auth, async (req, res) => {
   const tabela = req.user.role === 'colaborador' ? 'colaboradores' : 'clientes';
   try {
     const r = await pool.query(`SELECT * FROM ${tabela} WHERE id=$1`, [req.user.id]);
-    if (!r.rows.length || r.rows[0].senha !== senha_atual)
+    if (!r.rows.length || !verificarSenhaLogin(senha_atual, r.rows[0].senha).ok)
       return res.status(400).json({ erro: 'Senha atual incorreta' });
-    await pool.query(`UPDATE ${tabela} SET senha=$1 WHERE id=$2`, [nova_senha, req.user.id]);
+    await pool.query(`UPDATE ${tabela} SET senha=$1 WHERE id=$2`, [hashSenha(nova_senha), req.user.id]);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
@@ -1286,7 +1305,7 @@ app.post('/api/clientes', auth, adminOnly, async (req, res) => {
     const modo = plano === 'personalizado' ? (cobranca_modo === 'por_veiculo' ? 'por_veiculo' : 'fixo') : null;
     const r = await pool.query(
       'INSERT INTO clientes (tipo,documento,nome,email,senha,telefone,endereco,plano,valor_plano,cobranca_modo,dia_vencimento) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id,nome,email,plano',
-      [tipo||'cpf', documento.trim(), nome.trim(), email.trim().toLowerCase(), senha, telefone?.trim()||null, endereco?.trim()||null, plano||'cortesia', valor_plano||0, modo, dia_vencimento||10]
+      [tipo||'cpf', documento.trim(), nome.trim(), email.trim().toLowerCase(), hashSenha(senha), telefone?.trim()||null, endereco?.trim()||null, plano||'cortesia', valor_plano||0, modo, dia_vencimento||10]
     );
     const emailEnviado = await sendMail(email, 'Bem-vindo ao Felogix!',
       `<div style="font-family:sans-serif;max-width:480px;margin:auto">
@@ -1328,7 +1347,7 @@ app.put('/api/clientes/:id', auth, adminOnly, async (req, res) => {
     if (cobranca_modo !== undefined)                   { sets.push(`cobranca_modo=$${i++}`);  vals.push(cobranca_modo === 'por_veiculo' ? 'por_veiculo' : (cobranca_modo === 'fixo' ? 'fixo' : null)); }
     if (dia_vencimento !== undefined)                  { sets.push(`dia_vencimento=$${i++}`); vals.push(parseInt(dia_vencimento)||10); }
     if (ativo !== undefined)                           { sets.push(`ativo=$${i++}`);          vals.push(!!ativo); }
-    if (senha !== undefined && senha.length >= 6)      { sets.push(`senha=$${i++}`);          vals.push(senha); }
+    if (senha !== undefined && senha.length >= 6)      { sets.push(`senha=$${i++}`);          vals.push(hashSenha(senha)); }
     if (!sets.length) return res.status(400).json({ erro: 'Nada a atualizar' });
     vals.push(id);
     const r = await pool.query(`UPDATE clientes SET ${sets.join(',')} WHERE id=$${i} RETURNING id,nome,email,telefone,endereco,plano,valor_plano,dia_vencimento,ativo`, vals);
@@ -1924,7 +1943,7 @@ app.post('/api/colaboradores', auth, async (req, res) => {
   try {
     const r = await pool.query(
       'INSERT INTO colaboradores (cliente_id,grupo_id,nome,email,senha) VALUES ($1,$2,$3,$4,$5) RETURNING id,cliente_id,grupo_id,nome,email,ativo,criado_em',
-      [cliente_id, grupoIdFinal, nome.trim(), email.trim().toLowerCase(), senha]
+      [cliente_id, grupoIdFinal, nome.trim(), email.trim().toLowerCase(), hashSenha(senha)]
     );
     res.json({ ...r.rows[0], senha_gerada: senha });
   } catch (err) {
@@ -1945,7 +1964,7 @@ app.put('/api/colaboradores/:id', auth, async (req, res) => {
     const sets = []; const vals = []; let i = 1;
     if (nome !== undefined && isSafe(nome)) { sets.push(`nome=$${i++}`); vals.push(nome.trim()); }
     if (email !== undefined && isEmail(email)) { sets.push(`email=$${i++}`); vals.push(email.trim().toLowerCase()); }
-    if (senha !== undefined && senha.length >= 6) { sets.push(`senha=$${i++}`); vals.push(senha); }
+    if (senha !== undefined && senha.length >= 6) { sets.push(`senha=$${i++}`); vals.push(hashSenha(senha)); }
     if (ativo !== undefined) { sets.push(`ativo=$${i++}`); vals.push(!!ativo); }
     if (grupo_id !== undefined) {
       if (grupo_id === null || grupo_id === '') { sets.push(`grupo_id=$${i++}`); vals.push(null); }

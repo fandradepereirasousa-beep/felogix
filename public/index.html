@@ -933,13 +933,6 @@ function applyPosicoes(posicoes) {
         v.timestamp = pos.timestamp;
       }
     });
-  } else {
-    VEHICLES.forEach(v => {
-      if (v.status==='moving' && !v.bloqueado) {
-        v.lat += (Math.random()-.5)*.002; v.lng += (Math.random()-.5)*.002;
-        v.speed = Math.round(Math.max(20,Math.min(90,v.speed+(Math.random()-.5)*10)));
-      }
-    });
   }
   syncMkrs(); updateMapList();
   if (selV) openBS(selV);
@@ -960,7 +953,7 @@ async function liveMove() {
       const posicoes = await api('GET', '/api/posicoes');
       applyPosicoes(posicoes);
     } catch(e) {
-      applyPosicoes([]);
+      // falha de rede: mantém última posição conhecida, sem simular nada
     }
   }
 }

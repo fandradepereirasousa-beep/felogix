@@ -14,6 +14,7 @@ const WebSocket  = require('ws');
 const multer     = require('multer');
 const QRCode     = require('qrcode');
 const PDFDocument = require('pdfkit');
+const webpush    = require('web-push');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -27,6 +28,20 @@ const PIX_KEY    = '54.054.345/0001-57';
 const ADMIN_EMAIL = 'felipe.sousa@felogix.com.br';
 const ADMIN_PASS  = process.env.ADMIN_PASS || '95050578.Fege';
 const LEMBRETE_EMAIL = process.env.LEMBRETE_EMAIL || 'felogix.br@gmail.com'; // destino do lembrete mensal de faturas
+
+/* ─── NOTIFICAÇÕES PUSH (Web Push / VAPID) ─── */
+let VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
+let VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
+if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+  const vapidKeys = webpush.generateVAPIDKeys();
+  VAPID_PUBLIC_KEY = vapidKeys.publicKey;
+  VAPID_PRIVATE_KEY = vapidKeys.privateKey;
+  console.warn('[push] VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY ausentes no .env — gerando par temporário.');
+  console.warn('[push] Inscrições push serão invalidadas a cada restart. Para produção, defina no .env:');
+  console.warn(`[push] VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}`);
+  console.warn(`[push] VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}`);
+}
+webpush.setVapidDetails('mailto:suporte@felogix.com.br', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
 /* ─── TRACCAR (GPS Tracking) ─── */
 const TRACCAR_HOST = process.env.TRACCAR_HOST || 'localhost';
@@ -1078,6 +1093,17 @@ async function initDB() {
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_patrol_plantoes_comp ON patrol_plantoes (compartilhamento_id, status)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_patrol_plantoes_cliente ON patrol_plantoes (cliente_id, inicio DESC)`);
+  // Notificações push (Web Push): cada gestor pode assinar push em N navegadores/dispositivos
+  await pool.query(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    criado_em TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_endpoint_uniq ON push_subscriptions (endpoint)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_cliente ON push_subscriptions (cliente_id)`);
   // Conta de teste (gestor) — visualizar Track/Connect/Fleet/Patrol como cliente, sem usar o login admin
   // (precisa existir ANTES do seed de itens de checklist abaixo, para já nascer com o template padrão)
   await pool.query(
@@ -1982,6 +2008,32 @@ async function dispararAlerta(clienteId, veiculoId, tipo, mensagem) {
       [clienteId, veiculoId, tipo, mensagem]
     );
   } catch (e) { console.error('Erro registrando alerta:', e.message); }
+  enviarPushParaCliente(clienteId, 'Felogix Track', mensagem);
+}
+
+// Envia Web Push para todos os dispositivos inscritos de um cliente (gestor).
+// Falha silenciosamente por assinatura (alerta não pode travar por causa de push) e remove
+// inscrições mortas (410/404 = navegador desinscreveu ou nunca mais vai aceitar esse endpoint).
+async function enviarPushParaCliente(clienteId, titulo, corpo, dataExtra = {}) {
+  try {
+    const r = await pool.query('SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE cliente_id=$1', [clienteId]);
+    if (!r.rows.length) return;
+    const payload = JSON.stringify({ title: titulo, body: corpo, ...dataExtra });
+    for (const sub of r.rows) {
+      try {
+        await webpush.sendNotification(
+          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+          payload
+        );
+      } catch (e) {
+        if (e.statusCode === 410 || e.statusCode === 404) {
+          await pool.query('DELETE FROM push_subscriptions WHERE endpoint=$1', [sub.endpoint]);
+        } else {
+          console.error('Erro enviando push:', e.message);
+        }
+      }
+    }
+  } catch (e) { console.error('Erro consultando inscrições push:', e.message); }
 }
 
 // Avalia velocidade e offline a partir das posições atuais do Traccar.
@@ -2370,7 +2422,7 @@ app.post('/api/track/:token/checkin', async (req, res) => {
   const pontoId = parseInt(ponto_id);
   if (!pontoId || !Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ erro: 'Dados inválidos' });
   try {
-    const own = await pool.query('SELECT id, cliente_id FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    const own = await pool.query('SELECT id, cliente_id, nome FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
     if (!own.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
     const ponto = await pool.query('SELECT * FROM patrol_pontos WHERE id=$1 AND cliente_id=$2 AND ativo=true', [pontoId, own.rows[0].cliente_id]);
     if (!ponto.rows.length) return res.status(404).json({ erro: 'Ponto de ronda não encontrado' });
@@ -2381,6 +2433,8 @@ app.post('/api/track/:token/checkin', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
       [own.rows[0].cliente_id, pontoId, own.rows[0].id, lat, lon, distancia, dentroRaio]
     );
+    const statusMsg = dentroRaio ? 'dentro do raio' : 'fora do raio';
+    enviarPushParaCliente(own.rows[0].cliente_id, 'Felogix Patrol', `${own.rows[0].nome} fez check-in em ${ponto.rows[0].nome} (${statusMsg})`);
     res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
@@ -2398,6 +2452,7 @@ app.post('/api/track/:token/checkin-qr', async (req, res) => {
        VALUES ($1,$2,$3,true,'qrcode') RETURNING *`,
       [own.rows[0].cliente_id, ponto.rows[0].id, own.rows[0].id]
     );
+    enviarPushParaCliente(own.rows[0].cliente_id, 'Felogix Patrol', `${own.rows[0].nome} fez check-in via QR Code em ${ponto.rows[0].nome}`);
     res.json({ ...r.rows[0], ponto_nome: ponto.rows[0].nome, vigilante_nome: own.rows[0].nome });
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
@@ -2418,7 +2473,7 @@ app.post('/api/track/:token/plantao/iniciar', async (req, res) => {
   const { latitude, longitude } = req.body;
   const lat = parseFloat(latitude), lon = parseFloat(longitude);
   try {
-    const own = await pool.query('SELECT id, cliente_id FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    const own = await pool.query('SELECT id, cliente_id, nome FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
     if (!own.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
     const aberto = await pool.query(
       `SELECT id FROM patrol_plantoes WHERE compartilhamento_id=$1 AND status='aberto'`,
@@ -2430,6 +2485,7 @@ app.post('/api/track/:token/plantao/iniciar', async (req, res) => {
        VALUES ($1,$2,$3,$4) RETURNING *`,
       [own.rows[0].cliente_id, own.rows[0].id, Number.isFinite(lat) ? lat : null, Number.isFinite(lon) ? lon : null]
     );
+    enviarPushParaCliente(own.rows[0].cliente_id, 'Felogix Patrol', `${own.rows[0].nome} iniciou o plantão`);
     res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
@@ -2438,7 +2494,7 @@ app.post('/api/track/:token/plantao/fechar', async (req, res) => {
   const { latitude, longitude } = req.body;
   const lat = parseFloat(latitude), lon = parseFloat(longitude);
   try {
-    const own = await pool.query('SELECT id FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+    const own = await pool.query('SELECT id, cliente_id, nome FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
     if (!own.rows.length) return res.status(404).json({ erro: 'Link inválido ou expirado' });
     const aberto = await pool.query(
       `SELECT id FROM patrol_plantoes WHERE compartilhamento_id=$1 AND status='aberto' ORDER BY inicio DESC LIMIT 1`,
@@ -2449,6 +2505,7 @@ app.post('/api/track/:token/plantao/fechar', async (req, res) => {
       `UPDATE patrol_plantoes SET fim=NOW(), latitude_fim=$1, longitude_fim=$2, status='fechado' WHERE id=$3 RETURNING *`,
       [Number.isFinite(lat) ? lat : null, Number.isFinite(lon) ? lon : null, aberto.rows[0].id]
     );
+    enviarPushParaCliente(own.rows[0].cliente_id, 'Felogix Patrol', `${own.rows[0].nome} fechou o plantão`);
     res.json(r.rows[0]);
   } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
@@ -2491,6 +2548,36 @@ app.get('/api/alertas/eventos', auth, async (req, res) => {
     [req.user.id]
   );
   res.json(r.rows);
+});
+
+/* ─── NOTIFICAÇÕES PUSH ─── */
+app.get('/api/push/vapid-public-key', (req, res) => {
+  res.json({ publicKey: VAPID_PUBLIC_KEY });
+});
+
+app.post('/api/push/subscribe', auth, async (req, res) => {
+  if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const { endpoint, keys } = req.body || {};
+  if (!endpoint || !keys || !keys.p256dh || !keys.auth) return res.status(400).json({ erro: 'Inscrição inválida' });
+  try {
+    await pool.query(`
+      INSERT INTO push_subscriptions (cliente_id, endpoint, p256dh, auth)
+      VALUES ($1,$2,$3,$4)
+      ON CONFLICT (endpoint) DO UPDATE SET cliente_id=$1, p256dh=$3, auth=$4`,
+      [req.user.id, endpoint, keys.p256dh, keys.auth]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
+});
+
+app.delete('/api/push/subscribe', auth, async (req, res) => {
+  if (req.user.role === 'admin' || req.user.role === 'colaborador') return res.status(403).json({ erro: 'Sem permissão' });
+  const { endpoint } = req.body || {};
+  if (!endpoint) return res.status(400).json({ erro: 'endpoint obrigatório' });
+  try {
+    await pool.query('DELETE FROM push_subscriptions WHERE endpoint=$1 AND cliente_id=$2', [endpoint, req.user.id]);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 /* ─── GEOCERCAS (Felogix Track) ─── */

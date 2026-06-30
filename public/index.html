@@ -1531,6 +1531,12 @@ async function renderAlertas(c) {
     ];
     const ICONES_EVENTO = { velocidade:'⚡', bloqueio:'🔒', offline:'📵' };
     c.innerHTML = `<div class="pp">
+      <div class="sec-title">Notificações push</div>
+      <div class="cfg-section" style="margin-bottom:12px">
+        <div class="cfg-title">Receber alertas no navegador</div>
+        <div style="font-size:12px;color:var(--t2);margin-bottom:10px">Receba avisos em tempo real mesmo com o app em segundo plano.</div>
+        <button id="pushBtn" onclick="togglePush()" style="padding:10px 14px;background:var(--s2);border:1px solid var(--b1);color:var(--t1);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">Carregando…</button>
+      </div>
       <div class="sec-title">Alertas por email</div>
       <div class="cfg-section" style="margin-bottom:12px">
         <div class="cfg-title">Email para receber alertas</div>
@@ -1561,7 +1567,60 @@ async function renderAlertas(c) {
             </div>
           </div>`).join('')}
     </div>`;
+    atualizarBotaoPush();
   } catch(e) { c.innerHTML=`<div class="pp"><div class="empty"><div class="ei">⚠️</div><div class="et">${e.message}</div></div></div>`; }
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function atualizarBotaoPush() {
+  const btn = document.getElementById('pushBtn');
+  if (!btn) return;
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    btn.textContent = 'Não suportado neste navegador';
+    btn.disabled = true;
+    return;
+  }
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      btn.textContent = '🔔 Desativar notificações';
+    } else {
+      btn.textContent = '🔕 Ativar notificações';
+    }
+  } catch(e) { btn.textContent = '🔕 Ativar notificações'; }
+}
+
+async function togglePush() {
+  const btn = document.getElementById('pushBtn');
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    const existente = await reg.pushManager.getSubscription();
+    if (existente) {
+      await api('DELETE','/api/push/subscribe',{ endpoint: existente.endpoint });
+      await existente.unsubscribe();
+      toast('Notificações desativadas','ok');
+    } else {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { toast('Permissão de notificação negada','err'); return; }
+      const { publicKey } = await api('GET','/api/push/vapid-public-key');
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey)
+      });
+      await api('POST','/api/push/subscribe', sub.toJSON());
+      toast('Notificações ativadas ✅','ok');
+    }
+  } catch(e) { toast(e.message,'err'); }
+  atualizarBotaoPush();
 }
 
 async function salvarAlertas() {

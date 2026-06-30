@@ -26,7 +26,8 @@ const wsClients = new Set(); // ws com .user (payload do JWT) anexado
 const JWT_SECRET = process.env.JWT_SECRET || 'flx_' + require('crypto').randomBytes(32).toString('hex');
 const PIX_KEY    = '54.054.345/0001-57';
 const ADMIN_EMAIL = 'felipe.sousa@felogix.com.br';
-const ADMIN_PASS  = process.env.ADMIN_PASS || '95050578.Fege';
+const ADMIN_PASS  = process.env.ADMIN_PASS;
+if (!ADMIN_PASS) { console.error('FATAL: variável de ambiente ADMIN_PASS não definida'); process.exit(1); }
 const LEMBRETE_EMAIL = process.env.LEMBRETE_EMAIL || 'felogix.br@gmail.com'; // destino do lembrete mensal de faturas
 
 /* ─── NOTIFICAÇÕES PUSH (Web Push / VAPID) ─── */

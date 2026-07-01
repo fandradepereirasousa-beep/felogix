@@ -456,7 +456,7 @@ function initApp() {
   const rb = document.getElementById('tbRole');
   rb.textContent = rl[CU.role]||CU.role;
   rb.className = 'role-badge '+(rc[CU.role]||'');
-  if (CU.role === 'admin') document.getElementById('liveChip').style.display = 'flex';
+  if (CU.role === 'admin' || CU.role === 'gestor') document.getElementById('liveChip').style.display = 'flex';
   if (CU.role === 'colaborador') document.getElementById('notifBtn').style.display = 'none';
   buildNav();
   goTab('mapa');
@@ -889,7 +889,7 @@ function openBS(id) {
       ${blockBtn}
     </div>
     <div class="ev-head">Eventos</div>
-    <div class="ev-item"><div class="ev-ic">📡</div><div class="ev-txt" style="color:var(--t2)">Aguardando conexão do rastreador EC33</div></div>`);
+    <div class="ev-item"><div class="ev-ic">📡</div><div class="ev-txt" style="color:var(--t2)">${v.imei ? 'Aguardando eventos do rastreador' : 'Sem rastreador vinculado'}</div></div>`);
   loadHistorico('veiculo', v.id);
 }
 
@@ -929,6 +929,36 @@ function felogixConfirm(titulo, msg, onConfirm) {
   ov.querySelector('.flx-btn-cancel').onclick = close;
   ov.querySelector('.flx-btn-confirm').onclick = () => { close(); onConfirm(); };
 }
+function confirmarExcluirCliente(id, nome) {
+  felogixConfirm(`Excluir "${nome}"?`, 'Remove veículos, geocercas e histórico vinculados. Não pode ser desfeito.', () => deleteCliente(id));
+}
+function confirmarRemoverVeiculo(id) {
+  felogixConfirm('Remover veículo?', 'O veículo e seu histórico serão excluídos.', () => deleteVeiculo(id));
+}
+function confirmarRemoverChecklistItem(id, nome) {
+  felogixConfirm(`Remover item "${nome}"?`, 'O item será removido do template de checklist.', () => deleteChecklistItem(id));
+}
+function confirmarRemoverGeocerca(id, nome) {
+  felogixConfirm(`Remover geocerca "${nome}"?`, 'Os alertas vinculados a esta área serão desativados.', () => deleteGeocerca(id));
+}
+function confirmarRemoverPonto(id, nome) {
+  felogixConfirm(`Remover ponto "${nome}"?`, 'O histórico de check-ins deste ponto será mantido.', () => deletePontoRonda(id));
+}
+function confirmarRemoverGrupo(id, nome) {
+  felogixConfirm(`Remover grupo "${nome}" e todos os celulares?`, 'Esta ação não pode ser desfeita.', () => deleteGrupo(id));
+}
+function confirmarRemoverCompartilhamento(id) {
+  felogixConfirm('Remover este link?', 'O link de rastreamento deixará de funcionar.', () => deleteCompartilhamento(id));
+}
+function confirmarRemoverPessoa(grupoId, pessoaId, nome) {
+  felogixConfirm(`Remover "${nome}"?`, 'A pessoa será removida do grupo.', () => removerPessoa(grupoId, pessoaId));
+}
+function confirmarRemoverGrupoVeiculos(id, nome) {
+  felogixConfirm(`Remover grupo "${nome}"?`, 'Colaboradores deste grupo ficam sem acesso até serem reatribuídos.', () => deleteGrupoVeiculos(id));
+}
+function confirmarRemoverColaborador(id, nome) {
+  felogixConfirm(`Remover colaborador "${nome}"?`, 'O colaborador perderá o acesso ao sistema.', () => deleteColaborador(id));
+}
 
 async function toggleBlock(id) {
   const v = VEHICLES.find(x => x.id===id); if (!v) return;
@@ -956,6 +986,12 @@ function applyPosicoes(posicoes) {
         v.speed = pos.velocidade || 0;
         v.status = pos.velocidade > 5 ? 'moving' : 'online';
         v.timestamp = pos.timestamp;
+        if (currentTab === 'veiculos') {
+          const spdEl = document.getElementById('vspd-' + v.id);
+          const txtEl = document.getElementById('vstxt-' + v.id);
+          if (spdEl) spdEl.textContent = v.speed > 0 ? v.speed : '—';
+          if (txtEl) txtEl.textContent = v.status;
+        }
       }
     });
   }
@@ -1033,7 +1069,7 @@ async function renderClientes(c) {
             <div class="acts-row">
               <div class="act-btn blue" onclick="openEditCliente(${JSON.stringify(cl).replace(/"/g,'&quot;')})">✏️ Editar</div>
               <div class="act-btn ${cl.ativo?'red':'green'}" onclick="toggleCliente(${cl.id},${cl.ativo})">${cl.ativo?'🔴 Desativar':'🟢 Ativar'}</div>
-              <div class="act-btn red" onclick="if(confirm('Excluir o cliente \\'${cl.nome.replace(/'/g,"\\'")}\\'? Isso remove também veículos, geocercas e histórico vinculados. Esta ação não pode ser desfeita.'))deleteCliente(${cl.id})">🗑 Excluir</div>
+              <div class="act-btn red" onclick="confirmarExcluirCliente(${cl.id},'${cl.nome.replace(/'/g,"\\'")}')">🗑 Excluir</div>
             </div>
           </div>`).join('')}
     </div>`;
@@ -1119,7 +1155,7 @@ function openEditCliente(cl) {
       <div class="mf"><label>Celular</label><input id="eTelefone" value="${cl.telefone||''}" placeholder="(11) 90000-0000"/></div>
       <div class="mf"><label>Endereço</label><input id="eEndereco" value="${cl.endereco||''}" placeholder="Rua, número, cidade"/></div>
     </div>
-    <div class="mf"><label>Nova senha (deixe em branco para não alterar)</label><input id="eSenha" type="text" placeholder="Nova senha…"/></div>
+    <div class="mf"><label>Nova senha (deixe em branco para não alterar)</label><input id="eSenha" type="password" placeholder="Nova senha…"/></div>
     <div class="mf"><label>Plano</label>
       <select id="ePlano" onchange="toggleValorE(this.value)">
         <option value="cortesia" ${cl.plano==='cortesia'?'selected':''}>Cortesia (grátis)</option>
@@ -1225,9 +1261,9 @@ async function renderVeiculos(c) {
               <span class="badge badge-${badgeColor}">${badgeTxt}</span>
             </div>
             <div class="kpis-row">
-              <div class="kpi-box"><div class="v" style="color:var(--t2)">—</div><div class="l">km/h</div></div>
+              <div class="kpi-box"><div class="v" id="vspd-${v.id}" style="color:var(--t2)">—</div><div class="l">km/h</div></div>
               <div class="kpi-box"><div class="v">${isLink?'🔗':v.imei?'📡':'—'}</div><div class="l">${isLink?'Link':v.imei?'IMEI':'—'}</div></div>
-              <div class="kpi-box"><div class="v" style="font-size:10px;color:var(--t2)">${isLink?'ativo':'offline'}</div><div class="l">Status</div></div>
+              <div class="kpi-box"><div class="v" id="vstxt-${v.id}" style="font-size:10px;color:var(--t2)">${isLink?'ativo':'offline'}</div><div class="l">Status</div></div>
             </div>
             <div class="acts-row">
               <div class="act-btn" onclick="goTab('mapa');setTimeout(()=>openBS(${v.id}),300)">🗺 Ver no mapa</div>
@@ -1329,7 +1365,7 @@ function openEditVeiculo(v) {
     </div>
     <div class="mf"><label>${v.foto?'Trocar foto':'Adicionar foto'}</label><input id="evFoto" type="file" accept="image/jpeg,image/png,image/webp"/></div>
     <button class="mbtn" onclick="updateVeiculo(${v.id})">Salvar</button>
-    <button class="mbtn sec" onclick="if(confirm('Remover veículo?'))deleteVeiculo(${v.id})">🗑 Remover</button>`;
+    <button class="mbtn sec" onclick="confirmarRemoverVeiculo(${v.id})">🗑 Remover</button>`;
   openModal();
 }
 
@@ -1428,7 +1464,7 @@ async function renderChecklist(c) {
           <div class="card-top">
             <div class="card-info"><div class="card-title">${it.nome}</div></div>
             ${CU.role !== 'colaborador' ? `<div class="acts-row">
-              <div class="act-btn red" onclick="if(confirm('Remover item \\'${it.nome.replace(/'/g,"\\'")}\\'?'))deleteChecklistItem(${it.id})">🗑</div>
+              <div class="act-btn red" onclick="confirmarRemoverChecklistItem(${it.id},'${it.nome.replace(/'/g,"\\'")}')">🗑</div>
             </div>` : ''}
           </div>
         </div>`).join('')}
@@ -1685,7 +1721,7 @@ async function renderGeocercas(c) {
           </div>
           <div class="acts-row">
             <div class="act-btn blue" onclick='openGeocercaModal(${JSON.stringify(g).replace(/'/g,"&#39;")})'>✏️ Editar</div>
-            <div class="act-btn red" onclick="if(confirm('Remover a geocerca \\'${g.nome.replace(/'/g,"\\'")}\\'?'))deleteGeocerca(${g.id})">🗑 Remover</div>
+            <div class="act-btn red" onclick="confirmarRemoverGeocerca(${g.id},'${g.nome.replace(/'/g,"\\'")}')">🗑 Remover</div>
           </div>
         </div>`).join('')}
     </div>`;
@@ -1796,7 +1832,7 @@ async function renderPontosRonda(c) {
             <div class="act-btn" onclick="verHistoricoPonto(${p.id})">📋 Histórico</div>
             <div class="act-btn" onclick="verQrPonto(${p.id})">📷 QR Code</div>
             <div class="act-btn blue" onclick='openPontoRondaModal(${JSON.stringify(p).replace(/'/g,"&#39;")})'>✏️ Editar</div>
-            <div class="act-btn red" onclick="if(confirm('Remover o ponto \\'${p.nome.replace(/'/g,"\\'")}\\'?'))deletePontoRonda(${p.id})">🗑 Remover</div>
+            <div class="act-btn red" onclick="confirmarRemoverPonto(${p.id},'${p.nome.replace(/'/g,"\\'")}')">🗑 Remover</div>
           </div>
         </div>`).join('')}
     </div>`;
@@ -2023,7 +2059,7 @@ async function renderCompartilhamentos(c) {
           <div class="acts-row">
             <div class="act-btn blue" onclick="togglePessoas(${g.id})">👁 Ver celulares</div>
             <div class="act-btn" onclick="openAddPessoa(${g.id})">＋ Celular</div>
-            <div class="act-btn red" onclick="if(confirm('Remover grupo \\'${g.nome}\\' e todos os celulares dele?'))deleteGrupo(${g.id})">🗑 Remover</div>
+            <div class="act-btn red" onclick="confirmarRemoverGrupo(${g.id},'${g.nome.replace(/'/g,"\\'")}')">🗑 Remover</div>
           </div>
           <div id="pessoas_${g.id}" style="display:none;margin-top:10px"></div>
         </div>`).join('')}
@@ -2046,7 +2082,7 @@ async function renderCompartilhamentos(c) {
               <div class="act-btn" onclick="goTab('mapa');setTimeout(()=>openBSPerson(${comp.id}),300)">🗺 Ver no mapa</div>
               <div class="act-btn blue" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>
               <div class="act-btn" onclick="${comp.protegido?`removerSenhaPessoa(${comp.id},'${comp.nome.replace(/'/g,"\\'")}')`:`gerarSenhaPessoa(${comp.id},'${comp.nome.replace(/'/g,"\\'")}')`}">${comp.protegido?'🔓 Remover senha':'🔑 Gerar senha'}</div>
-              <div class="act-btn red" onclick="if(confirm('Remover este link?'))deleteCompartilhamento(${comp.id})">🗑 Remover</div>
+              <div class="act-btn red" onclick="confirmarRemoverCompartilhamento(${comp.id})">🗑 Remover</div>
             </div>
           </div>`;
         }).join('')}
@@ -2080,7 +2116,7 @@ async function togglePessoas(grupoId) {
             <div class="act-btn" onclick="goTab('mapa');setTimeout(()=>openBSPerson(${p.id}),300)">🗺 Ver no mapa</div>
             <div class="act-btn blue" onclick="copyToClipboard('${link}')">📋 Copiar Link</div>
             <div class="act-btn" onclick="${p.protegido?`removerSenhaPessoa(${p.id},'${p.nome.replace(/'/g,"\\'")}')`:`gerarSenhaPessoa(${p.id},'${p.nome.replace(/'/g,"\\'")}')`}">${p.protegido?'🔓 Remover senha':'🔑 Gerar senha'}</div>
-            <div class="act-btn red" onclick="if(confirm('Remover ${p.nome}?'))removerPessoa(${grupoId},${p.id})">🗑 Remover</div>
+            <div class="act-btn red" onclick="confirmarRemoverPessoa(${grupoId},${p.id},'${p.nome.replace(/'/g,"\\'")}')">🗑 Remover</div>
           </div>
         </div>`;
       }).join('');
@@ -2230,7 +2266,7 @@ async function renderEquipe(c) {
           </div>
           <div class="acts-row">
             <div class="act-btn blue" onclick="openEditGrupoVeiculos(${g.id},'${g.nome.replace(/'/g,"\\'")}')">✏️ Editar veículos</div>
-            <div class="act-btn red" onclick="if(confirm('Remover grupo \\'${g.nome}\\'? Colaboradores deste grupo ficam sem acesso até serem reatribuídos.'))deleteGrupoVeiculos(${g.id})">🗑 Remover</div>
+            <div class="act-btn red" onclick="confirmarRemoverGrupoVeiculos(${g.id},'${g.nome.replace(/'/g,"\\'")}')">🗑 Remover</div>
           </div>
         </div>`).join('')}
       <div class="sec-title" style="margin-top:20px">Colaboradores <span style="color:var(--t2);font-size:11px;font-weight:400">${colaboradores.length}</span><button class="add-btn" onclick="openAddColaborador()">＋ Colaborador</button></div>
@@ -2247,7 +2283,7 @@ async function renderEquipe(c) {
           <div class="acts-row">
             <div class="act-btn blue" onclick="openEditColaborador(${JSON.stringify(col).replace(/"/g,'&quot;')})">✏️ Editar</div>
             <div class="act-btn" onclick="toggleColaborador(${col.id},${!col.ativo})">${col.ativo?'⏸ Desativar':'▶️ Ativar'}</div>
-            <div class="act-btn red" onclick="if(confirm('Remover colaborador \\'${col.nome}\\'?'))deleteColaborador(${col.id})">🗑 Remover</div>
+            <div class="act-btn red" onclick="confirmarRemoverColaborador(${col.id},'${col.nome.replace(/'/g,"\\'")}')">🗑 Remover</div>
           </div>
         </div>`).join('')}
     </div>`;
@@ -2450,13 +2486,14 @@ async function gerarSenhaPessoa(id, nome) {
   } catch(e) { toast(e.message,'err'); }
 }
 
-async function removerSenhaPessoa(id, nome) {
-  if (!confirm(`Remover a senha de "${nome}"? O link volta a abrir livremente, sem pedir senha.`)) return;
-  try {
-    await api('DELETE', `/api/compartilhamentos/${id}/senha`);
-    toast('Senha removida','ok');
-    renderCompartilhamentos(document.getElementById('mainContent'));
-  } catch(e) { toast(e.message,'err'); }
+function removerSenhaPessoa(id, nome) {
+  felogixConfirm(`Remover a senha de "${nome}"?`, 'O link volta a abrir livremente, sem pedir senha.', async () => {
+    try {
+      await api('DELETE', `/api/compartilhamentos/${id}/senha`);
+      toast('Senha removida','ok');
+      renderCompartilhamentos(document.getElementById('mainContent'));
+    } catch(e) { toast(e.message,'err'); }
+  });
 }
 
 async function renderFinanceiro(c) {
@@ -2638,15 +2675,16 @@ async function enviarLote(){
   capturarTemplate();
   const sel = LOTE.clientes.filter(x=>x._sel && !x.ja_enviado);
   if(!sel.length) return toast('Selecione ao menos um cliente','err');
-  if(!confirm(`Enviar ${sel.length} e-mail(s) referente a ${fmtMes(LOTE.mes_ref)}?`)) return;
-  const itens = sel.map(cl => ({ cliente_id: cl.cliente_id, valor: cl._valor, assunto: cl._assunto||undefined, corpo: cl._corpo||undefined }));
-  try {
-    const r = await api('POST','/api/financeiro/enviar',{ mes_ref: LOTE.mes_ref, template: LOTE.template, itens });
-    let msg = `${r.enviados} e-mail(s) enviado(s)`;
-    if(r.falhas&&r.falhas.length) msg += ` · ${r.falhas.length} falha(s)`;
-    toast(msg, (r.falhas&&r.falhas.length)?'err':'ok');
-    renderCobrancas(document.getElementById('mainContent'), LOTE.mes_ref);
-  } catch(e){ toast(e.message,'err'); }
+  felogixConfirm(`Enviar ${sel.length} e-mail(s)?`, `Referente a ${fmtMes(LOTE.mes_ref)}. Esta ação não pode ser desfeita.`, async () => {
+    const itens = sel.map(cl => ({ cliente_id: cl.cliente_id, valor: cl._valor, assunto: cl._assunto||undefined, corpo: cl._corpo||undefined }));
+    try {
+      const r = await api('POST','/api/financeiro/enviar',{ mes_ref: LOTE.mes_ref, template: LOTE.template, itens });
+      let msg = `${r.enviados} e-mail(s) enviado(s)`;
+      if(r.falhas&&r.falhas.length) msg += ` · ${r.falhas.length} falha(s)`;
+      toast(msg, (r.falhas&&r.falhas.length)?'err':'ok');
+      renderCobrancas(document.getElementById('mainContent'), LOTE.mes_ref);
+    } catch(e){ toast(e.message,'err'); }
+  });
 }
 
 async function abrirHistoricoEmails(){

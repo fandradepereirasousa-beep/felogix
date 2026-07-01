@@ -40,7 +40,6 @@ if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
   console.warn('[push] VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY ausentes no .env — gerando par temporário.');
   console.warn('[push] Inscrições push serão invalidadas a cada restart. Para produção, defina no .env:');
   console.warn(`[push] VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}`);
-  console.warn(`[push] VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY}`);
 }
 webpush.setVapidDetails('mailto:suporte@felogix.com.br', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
@@ -1123,12 +1122,16 @@ async function initDB() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_cliente ON push_subscriptions (cliente_id)`);
   // Conta de teste (gestor) — visualizar Track/Connect/Fleet/Patrol como cliente, sem usar o login admin
   // (precisa existir ANTES do seed de itens de checklist abaixo, para já nascer com o template padrão)
-  await pool.query(
-    `INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
-     VALUES ('cpf','000.000.000-01','Felipe (Teste Gestor)',$1,$2,'cortesia',true)
-     ON CONFLICT (email) DO UPDATE SET senha = EXCLUDED.senha`,
-    ['fandradepereirasousa@gmail.com', hashSenha(ADMIN_PASS)]
-  );
+  // Verificamos existência antes de chamar hashSenha (scryptSync bloqueante) — só roda na primeira vez.
+  // Para redefinir a senha após troca de ADMIN_PASS: DELETE FROM clientes WHERE email='fandradepereirasousa@gmail.com' e reiniciar.
+  const _gestorExiste = await pool.query('SELECT id FROM clientes WHERE email=$1', ['fandradepereirasousa@gmail.com']);
+  if (!_gestorExiste.rows.length) {
+    await pool.query(
+      `INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
+       VALUES ('cpf','000.000.000-01','Felipe (Teste Gestor)',$1,$2,'cortesia',true)`,
+      ['fandradepereirasousa@gmail.com', hashSenha(ADMIN_PASS)]
+    );
+  }
   // Template padrão de checklist (itens comuns de pré/pós-viagem) — cliente pode editar depois
   await pool.query(`
     INSERT INTO fleet_checklist_itens (cliente_id, nome, ordem)

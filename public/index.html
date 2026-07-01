@@ -255,6 +255,15 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
 .loading{display:flex;align-items:center;justify-content:center;padding:40px;color:var(--t3);font-size:12px;gap:8px;}
 @keyframes spin{to{transform:rotate(360deg);}}
 .spinner{width:16px;height:16px;border:2px solid var(--b1);border-top-color:var(--red);border-radius:50%;animation:spin .7s linear infinite;}
+/* CONFIRM MODAL */
+.flx-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:9000;display:flex;align-items:center;justify-content:center;padding:20px;}
+.flx-modal{background:var(--s1);border:1px solid var(--b1);border-radius:14px;padding:20px;max-width:320px;width:100%;}
+.flx-modal h3{font-size:14px;font-weight:700;margin-bottom:6px;}
+.flx-modal p{font-size:12px;color:var(--t2);margin-bottom:18px;line-height:1.5;}
+.flx-modal-btns{display:flex;gap:8px;}
+.flx-modal-btns button{flex:1;padding:11px;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;}
+.flx-btn-cancel{background:var(--s2);color:var(--t1);}
+.flx-btn-confirm{background:var(--red);color:#fff;}
 </style>
 </head>
 <body>
@@ -330,6 +339,7 @@ let TOKEN = localStorage.getItem('flx_token') || '';
 let CU = null;
 let map = null, markers = {}, selV = null, mapSbOpen = true, currentTab = '';
 let VEHICLES = [], COMPARTILHAMENTOS = [], liveTimer = null, trailLine = null;
+let liveErrCount = 0;
 let tileLayer = null, mapRetryTimer = null, clusterGroup = null;
 let liveWS = null, wsReconnectTimer = null;
 
@@ -909,19 +919,31 @@ function openBSPerson(id) {
   loadHistorico('pessoa', c.id);
 }
 
+// Modal de confirmação não-bloqueante — substitui confirm() que falha em iOS PWA/WebView.
+function felogixConfirm(titulo, msg, onConfirm) {
+  const ov = document.createElement('div');
+  ov.className = 'flx-overlay';
+  ov.innerHTML = `<div class="flx-modal"><h3>${titulo}</h3><p>${msg}</p><div class="flx-modal-btns"><button class="flx-btn-cancel">Cancelar</button><button class="flx-btn-confirm">Confirmar</button></div></div>`;
+  document.body.appendChild(ov);
+  const close = () => document.body.removeChild(ov);
+  ov.querySelector('.flx-btn-cancel').onclick = close;
+  ov.querySelector('.flx-btn-confirm').onclick = () => { close(); onConfirm(); };
+}
+
 async function toggleBlock(id) {
   const v = VEHICLES.find(x => x.id===id); if (!v) return;
-  const acao = v.bloqueado ? 'desbloquear a ignição' : 'BLOQUEAR a ignição';
-  const aviso = v.bloqueado ? '' : '\n\n⚠️ Certifique-se de que o veículo está parado.';
-  if (!confirm(`Confirmar: ${acao} de ${v.placa}?${aviso}`)) return;
-  try {
-    await api('PUT', `/api/veiculos/${id}`, { bloqueado: !v.bloqueado });
-    v.bloqueado = !v.bloqueado;
-    if (v.bloqueado) { v.status='stopped'; v.speed=0; v.ignition=false; }
-    toast(v.bloqueado?`🔒 ${v.placa} bloqueado`:`✅ ${v.placa} desbloqueado`, v.bloqueado?'err':'ok');
-    syncMkrs(); openBS(id);
-    if (currentTab==='veiculos') renderVeiculos(document.getElementById('mainContent'));
-  } catch(e) { toast(e.message,'err'); }
+  const titulo = v.bloqueado ? `Desbloquear ${v.placa}?` : `BLOQUEAR ${v.placa}?`;
+  const msg = v.bloqueado ? 'Confirmar desbloqueio da ignição.' : '⚠️ Certifique-se de que o veículo está parado antes de bloquear.';
+  felogixConfirm(titulo, msg, async () => {
+    try {
+      await api('PUT', `/api/veiculos/${id}`, { bloqueado: !v.bloqueado });
+      v.bloqueado = !v.bloqueado;
+      if (v.bloqueado) { v.status='stopped'; v.speed=0; v.ignition=false; }
+      toast(v.bloqueado?`🔒 ${v.placa} bloqueado`:`✅ ${v.placa} desbloqueado`, v.bloqueado?'err':'ok');
+      syncMkrs(); openBS(id);
+      if (currentTab==='veiculos') renderVeiculos(document.getElementById('mainContent'));
+    } catch(e) { toast(e.message,'err'); }
+  });
 }
 
 function applyPosicoes(posicoes) {
@@ -954,9 +976,11 @@ async function liveMove() {
   if (!(liveWS && liveWS.readyState === WebSocket.OPEN)) {
     try {
       const posicoes = await api('GET', '/api/posicoes');
+      liveErrCount = 0;
       applyPosicoes(posicoes);
     } catch(e) {
-      // falha de rede: mantém última posição conhecida, sem simular nada
+      liveErrCount++;
+      if (liveErrCount === 3) toast('Sem sinal do servidor. Verificando conexão…', 'err');
     }
   }
 }
@@ -969,7 +993,7 @@ function connectWS() {
   liveWS.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
-      if (msg.type === 'posicoes') applyPosicoes(msg.data);
+      if (msg.type === 'posicoes') { liveErrCount = 0; applyPosicoes(msg.data); }
       else if (msg.type === 'compartilhamento' && (APP_MODE === 'connect' || APP_MODE === 'patrol')) {
         msg.data.filter(c => c.tipo === 'pessoa').forEach(applyCompartilhamento);
       }
@@ -1165,6 +1189,9 @@ async function renderVeiculos(c) {
   c.innerHTML = `<div class="pp"><div class="loading"><div class="spinner"></div>Carregando…</div></div>`;
   try {
     const vs = await api('GET','/api/veiculos');
+    if (clusterGroup) clusterGroup.clearLayers();
+    Object.values(markers).forEach(m => map && map.removeLayer(m));
+    markers = {};
     VEHICLES = vs.map(v => ({ ...v, status: v.bloqueado?'blocked':'offline', speed:0, lat:null, lng:null, ignition:false, updated:'offline' }));
     const addBtn = CU.role==='admin' ? `<button class="add-btn" onclick="openAddVeiculo()">＋ Veículo</button>` : '';
     c.innerHTML = `<div class="pp">

@@ -462,14 +462,21 @@ function verificarSenha(senha, armazenada) {
   const testBuf = crypto.scryptSync(senha, salt, 64);
   return hashBuf.length === testBuf.length && crypto.timingSafeEqual(hashBuf, testBuf);
 }
+// Comparação de strings em tempo constante (evita timing oracle).
+function compareSenha(a, b) {
+  const ba = Buffer.from(a == null ? '' : String(a));
+  const bb = Buffer.from(b == null ? '' : String(b));
+  if (ba.length !== bb.length) { crypto.timingSafeEqual(ba, ba); return false; }
+  return crypto.timingSafeEqual(ba, bb);
+}
 // Verificação de senha do dashboard com migração automática de texto puro para hash.
 // Retorna { ok, eraTextoPlano } para que o caller possa re-hash imediatamente.
 function verificarSenhaLogin(input, armazenada) {
   const partes = armazenada ? armazenada.split(':') : [];
-  if (partes.length === 2 && partes[1].length === 128) {
+  if (partes.length === 2 && partes[0].length === 32 && partes[1].length === 128) {
     return { ok: verificarSenha(input, armazenada), eraTextoPlano: false };
   }
-  return { ok: input === armazenada, eraTextoPlano: true };
+  return { ok: compareSenha(input, armazenada), eraTextoPlano: true };
 }
 function getCookie(req, name) {
   const raw = req.headers.cookie;
@@ -1119,7 +1126,7 @@ async function initDB() {
   await pool.query(
     `INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
      VALUES ('cpf','000.000.000-01','Felipe (Teste Gestor)',$1,$2,'cortesia',true)
-     ON CONFLICT (email) DO NOTHING`,
+     ON CONFLICT (email) DO UPDATE SET senha = EXCLUDED.senha`,
     ['fandradepereirasousa@gmail.com', hashSenha(ADMIN_PASS)]
   );
   // Template padrão de checklist (itens comuns de pré/pós-viagem) — cliente pode editar depois
@@ -1148,7 +1155,11 @@ app.post('/api/login', rateLimit(10, 60000), async (req, res) => {
   };
 
   // Admin
-  if (email === ADMIN_EMAIL && senha === ADMIN_PASS) {
+  if (email === ADMIN_EMAIL) {
+    if (!compareSenha(senha, ADMIN_PASS)) {
+      await logAcesso(false);
+      return res.status(401).json({ erro: 'Credenciais inválidas' });
+    }
     await logAcesso(true);
     const token = jwt.sign({ id: 0, role: 'admin', nome: 'Felipe Andrade' }, JWT_SECRET, { expiresIn: '12h' });
     return res.json({ token, role: 'admin', nome: 'Felipe Andrade', initials: 'FA' });

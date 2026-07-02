@@ -203,7 +203,7 @@ const PRODUTOS = [
     tagline: 'Gestão completa de frotas',
     icone: '🚚',
     cor: '#2D6CDF',
-    status: 'disponivel',
+    status: 'em_breve',
     appHref: '/fleet',
     descricao: 'O cérebro operacional e financeiro da sua frota: checklist digital, controle de manutenção, quilometragem e compliance em um só painel.',
     funcionalidades: [
@@ -226,7 +226,7 @@ const PRODUTOS = [
     tagline: 'Localização compartilhada entre pessoas e equipes',
     icone: '📍',
     cor: '#1FAE6B',
-    status: 'disponivel',
+    status: 'em_breve',
     appHref: '/connect',
     descricao: 'Compartilhamento de localização em tempo real entre família, amigos e equipes — sem precisar de hardware, direto do GPS do smartphone.',
     funcionalidades: [
@@ -249,7 +249,7 @@ const PRODUTOS = [
     tagline: 'Rondas, checklists e auditoria de segurança patrimonial',
     icone: '🛡️',
     cor: '#6B21D9',
-    status: 'disponivel',
+    status: 'em_breve',
     appHref: '/patrol',
     descricao: 'Sistema de auditoria e controle operacional para vigilantes e supervisores, com rastreamento de plantão, validação de pontos de ronda e relatórios de fechamento.',
     funcionalidades: [
@@ -1026,11 +1026,24 @@ async function initDB() {
     criado_em TIMESTAMP DEFAULT NOW()
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_geocercas_cliente ON geocercas (cliente_id)`);
-  await pool.query(`
-    INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
-    VALUES ('cnpj','54.024.215/0001-00','Impacto Segurança','frota@grupoimpacto.com.br','Frota@123','track',true)
-    ON CONFLICT (email) DO NOTHING
-  `);
+  // hashSenha gera 161 chars (32 salt hex + ':' + 128 hash hex); colunas antigas VARCHAR(100) causavam
+  // erro do PostgreSQL em todo login que acionava a migração automática plaintext→hash. Alargamos para
+  // VARCHAR(200) de forma idempotente via ALTER TYPE.
+  try {
+    await pool.query(`ALTER TABLE clientes ALTER COLUMN senha TYPE VARCHAR(200)`);
+  } catch (e) { console.warn('Migração clientes.senha VARCHAR(200):', e.message); }
+  try {
+    await pool.query(`ALTER TABLE colaboradores ALTER COLUMN senha TYPE VARCHAR(200)`);
+  } catch (e) { console.warn('Migração colaboradores.senha VARCHAR(200):', e.message); }
+  // Conta demo (cliente) — só cria na primeira inicialização; usa hashSenha pra já nascer hasheada.
+  const _demoExiste = await pool.query(`SELECT id FROM clientes WHERE email='frota@grupoimpacto.com.br'`);
+  if (!_demoExiste.rows.length) {
+    await pool.query(
+      `INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
+       VALUES ('cnpj','54.024.215/0001-00','Impacto Segurança','frota@grupoimpacto.com.br',$1,'track',true)`,
+      [hashSenha('Frota@123')]
+    );
+  }
   // Cadastro de clientes: campos de contato/endereço (Connect/Fleet/Patrol precisam disso no onboarding)
   try {
     await pool.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS telefone VARCHAR(20)`);
@@ -1268,7 +1281,7 @@ app.post('/api/alterar-senha', auth, async (req, res) => {
   if (nova_senha.length > 100) return res.status(400).json({ erro: 'Senha muito longa' });
   const tabela = req.user.role === 'colaborador' ? 'colaboradores' : 'clientes';
   try {
-    const r = await pool.query(`SELECT * FROM ${tabela} WHERE id=$1`, [req.user.id]);
+    const r = await pool.query(`SELECT id, senha FROM ${tabela} WHERE id=$1`, [req.user.id]);
     if (!r.rows.length || !verificarSenhaLogin(senha_atual, r.rows[0].senha).ok)
       return res.status(400).json({ erro: 'Senha atual incorreta' });
     await pool.query(`UPDATE ${tabela} SET senha=$1 WHERE id=$2`, [hashSenha(nova_senha), req.user.id]);
@@ -1282,14 +1295,16 @@ app.get('/api/verify-token', auth, async (req, res) => {
     return res.json({ token: '', role: 'admin', nome: 'Felipe Andrade', initials: 'FA' });
   }
   if (req.user.role === 'colaborador') {
-    const r = await pool.query(
-      `SELECT col.nome, cl.nome AS empresa_nome FROM colaboradores col
-       JOIN clientes cl ON col.cliente_id = cl.id WHERE col.id=$1 AND col.ativo=true`, [req.user.id]
-    );
-    if (!r.rows.length) return res.status(401).json({ erro: 'Usuário inativo' });
-    const col = r.rows[0];
-    const initials = col.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
-    return res.json({ token: '', role: 'colaborador', nome: col.nome, empresa: col.empresa_nome, initials });
+    try {
+      const r = await pool.query(
+        `SELECT col.nome, cl.nome AS empresa_nome FROM colaboradores col
+         JOIN clientes cl ON col.cliente_id = cl.id WHERE col.id=$1 AND col.ativo=true`, [req.user.id]
+      );
+      if (!r.rows.length) return res.status(401).json({ erro: 'Usuário inativo' });
+      const col = r.rows[0];
+      const initials = col.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+      return res.json({ token: '', role: 'colaborador', nome: col.nome, empresa: col.empresa_nome, initials });
+    } catch (err) { return res.status(500).json({ erro: 'Erro interno' }); }
   }
   try {
     const r = await pool.query('SELECT nome, plano, tipo FROM clientes WHERE id=$1 AND ativo=true', [req.user.id]);

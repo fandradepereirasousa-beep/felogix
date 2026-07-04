@@ -17,6 +17,9 @@ const PDFDocument = require('pdfkit');
 const webpush    = require('web-push');
 
 const app  = express();
+// Atrás do nginx local (listen em 127.0.0.1): sem isso req.ip é sempre 127.0.0.1,
+// o que faz o rate-limit e o bloqueio por tentativas valerem para TODOS os usuários juntos.
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 const httpServer = http.createServer(app);
 const wss = new WebSocket.Server({ server: httpServer, path: '/ws' });
@@ -24,6 +27,7 @@ const wsClients = new Set(); // ws com .user (payload do JWT) anexado
 
 /* ─── SEGREDOS — nunca hardcoded ─── */
 const JWT_SECRET = process.env.JWT_SECRET || 'flx_' + require('crypto').randomBytes(32).toString('hex');
+if (!process.env.JWT_SECRET) console.warn('[auth] JWT_SECRET ausente no .env — usando segredo temporário; todas as sessões caem a cada restart.');
 const PIX_KEY    = '54.054.345/0001-57';
 const ADMIN_EMAIL = 'felipe.sousa@felogix.com.br';
 const ADMIN_PASS  = process.env.ADMIN_PASS;
@@ -130,6 +134,11 @@ function rateLimit(max, windowMs) {
     next();
   };
 }
+// Purga entradas velhas para o Map não crescer sem limite (1 entrada por IP visto)
+setInterval(() => {
+  const agora = Date.now();
+  for (const [k, h] of hits) { if (agora - h.start > 10 * 60 * 1000) hits.delete(k); }
+}, 10 * 60 * 1000);
 
 /* ─── MIDDLEWARES ─── */
 app.use(cors({ origin: ['https://felogix.com.br', 'https://www.felogix.com.br', 'http://localhost:3000'] }));
@@ -203,7 +212,7 @@ const PRODUTOS = [
     tagline: 'Gestão completa de frotas',
     icone: '🚚',
     cor: '#2D6CDF',
-    status: 'disponivel',
+    status: 'em_breve',
     appHref: '/fleet',
     descricao: 'O cérebro operacional e financeiro da sua frota: checklist digital, controle de manutenção, quilometragem e compliance em um só painel.',
     funcionalidades: [
@@ -226,7 +235,7 @@ const PRODUTOS = [
     tagline: 'Localização compartilhada entre pessoas e equipes',
     icone: '📍',
     cor: '#1FAE6B',
-    status: 'disponivel',
+    status: 'em_breve',
     appHref: '/connect',
     descricao: 'Compartilhamento de localização em tempo real entre família, amigos e equipes — sem precisar de hardware, direto do GPS do smartphone.',
     funcionalidades: [
@@ -249,7 +258,7 @@ const PRODUTOS = [
     tagline: 'Rondas, checklists e auditoria de segurança patrimonial',
     icone: '🛡️',
     cor: '#6B21D9',
-    status: 'disponivel',
+    status: 'em_breve',
     appHref: '/patrol',
     descricao: 'Sistema de auditoria e controle operacional para vigilantes e supervisores, com rastreamento de plantão, validação de pontos de ronda e relatórios de fechamento.',
     funcionalidades: [
@@ -427,9 +436,16 @@ app.get('/produtos/:slug', (req, res) => {
   if (!produto) return res.status(404).send(paginaEmConstrucao('Página não encontrada', 'O produto que você procura não existe.'));
   res.send(paginaProduto(produto));
 });
-app.get('/fleet', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.get('/connect', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.get('/patrol', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+// Apps de produto: só abrem se o produto estiver 'disponivel' no catálogo PRODUTOS;
+// caso contrário, redireciona para a página institucional ("Em breve"). Reabrir um
+// produto no futuro é só mudar o status no catálogo — nenhuma rota precisa mudar.
+for (const slug of ['fleet', 'connect', 'patrol']) {
+  app.get('/' + slug, (req, res) => {
+    const produto = PRODUTOS.find(p => p.slug === slug);
+    if (!produto || produto.status !== 'disponivel') return res.redirect('/produtos/' + slug);
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  });
+}
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -748,7 +764,8 @@ async function enviarCortesia(cli, mesRef) {
 const TPL_ASSUNTO_PADRAO = 'Fatura Felogix — {mes}';
 const TPL_CORPO_PADRAO = 'Olá, {nome}!\n\nSegue sua fatura referente a {mes}, no valor de {valor}.\nO pagamento pode ser feito via PIX (chave no final do e-mail).\n\nQualquer dúvida, é só responder esta mensagem. Obrigado por confiar na Felogix! 🚗';
 
-function escapeHtml(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// (escapeHtml já definida acima — a redeclaração antiga aqui sobrescrevia a versão
+// completa por hoisting e NÃO escapava aspas, enfraquecendo o escape em atributos HTML)
 function aplicarVars(txt, v){
   return String(txt == null ? '' : txt)
     .replace(/\{nome\}/g, v.nome).replace(/\{valor\}/g, v.valor)
@@ -1026,11 +1043,24 @@ async function initDB() {
     criado_em TIMESTAMP DEFAULT NOW()
   )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_geocercas_cliente ON geocercas (cliente_id)`);
-  await pool.query(`
-    INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
-    VALUES ('cnpj','54.024.215/0001-00','Impacto Segurança','frota@grupoimpacto.com.br','Frota@123','track',true)
-    ON CONFLICT (email) DO NOTHING
-  `);
+  // hashSenha gera 161 chars (32 salt hex + ':' + 128 hash hex); colunas antigas VARCHAR(100) causavam
+  // erro do PostgreSQL em todo login que acionava a migração automática plaintext→hash. Alargamos para
+  // VARCHAR(200) de forma idempotente via ALTER TYPE.
+  try {
+    await pool.query(`ALTER TABLE clientes ALTER COLUMN senha TYPE VARCHAR(200)`);
+  } catch (e) { console.warn('Migração clientes.senha VARCHAR(200):', e.message); }
+  try {
+    await pool.query(`ALTER TABLE colaboradores ALTER COLUMN senha TYPE VARCHAR(200)`);
+  } catch (e) { console.warn('Migração colaboradores.senha VARCHAR(200):', e.message); }
+  // Conta demo (cliente) — só cria na primeira inicialização; usa hashSenha pra já nascer hasheada.
+  const _demoExiste = await pool.query(`SELECT id FROM clientes WHERE email='frota@grupoimpacto.com.br'`);
+  if (!_demoExiste.rows.length) {
+    await pool.query(
+      `INSERT INTO clientes (tipo,documento,nome,email,senha,plano,ativo)
+       VALUES ('cnpj','54.024.215/0001-00','Impacto Segurança','frota@grupoimpacto.com.br',$1,'track',true)`,
+      [hashSenha('Frota@123')]
+    );
+  }
   // Cadastro de clientes: campos de contato/endereço (Connect/Fleet/Patrol precisam disso no onboarding)
   try {
     await pool.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS telefone VARCHAR(20)`);
@@ -1268,7 +1298,7 @@ app.post('/api/alterar-senha', auth, async (req, res) => {
   if (nova_senha.length > 100) return res.status(400).json({ erro: 'Senha muito longa' });
   const tabela = req.user.role === 'colaborador' ? 'colaboradores' : 'clientes';
   try {
-    const r = await pool.query(`SELECT * FROM ${tabela} WHERE id=$1`, [req.user.id]);
+    const r = await pool.query(`SELECT id, senha FROM ${tabela} WHERE id=$1`, [req.user.id]);
     if (!r.rows.length || !verificarSenhaLogin(senha_atual, r.rows[0].senha).ok)
       return res.status(400).json({ erro: 'Senha atual incorreta' });
     await pool.query(`UPDATE ${tabela} SET senha=$1 WHERE id=$2`, [hashSenha(nova_senha), req.user.id]);
@@ -1282,14 +1312,16 @@ app.get('/api/verify-token', auth, async (req, res) => {
     return res.json({ token: '', role: 'admin', nome: 'Felipe Andrade', initials: 'FA' });
   }
   if (req.user.role === 'colaborador') {
-    const r = await pool.query(
-      `SELECT col.nome, cl.nome AS empresa_nome FROM colaboradores col
-       JOIN clientes cl ON col.cliente_id = cl.id WHERE col.id=$1 AND col.ativo=true`, [req.user.id]
-    );
-    if (!r.rows.length) return res.status(401).json({ erro: 'Usuário inativo' });
-    const col = r.rows[0];
-    const initials = col.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
-    return res.json({ token: '', role: 'colaborador', nome: col.nome, empresa: col.empresa_nome, initials });
+    try {
+      const r = await pool.query(
+        `SELECT col.nome, cl.nome AS empresa_nome FROM colaboradores col
+         JOIN clientes cl ON col.cliente_id = cl.id WHERE col.id=$1 AND col.ativo=true`, [req.user.id]
+      );
+      if (!r.rows.length) return res.status(401).json({ erro: 'Usuário inativo' });
+      const col = r.rows[0];
+      const initials = col.nome.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+      return res.json({ token: '', role: 'colaborador', nome: col.nome, empresa: col.empresa_nome, initials });
+    } catch (err) { return res.status(500).json({ erro: 'Erro interno' }); }
   }
   try {
     const r = await pool.query('SELECT nome, plano, tipo FROM clientes WHERE id=$1 AND ativo=true', [req.user.id]);
@@ -1302,8 +1334,10 @@ app.get('/api/verify-token', auth, async (req, res) => {
 
 /* ─── CLIENTES ─── */
 app.get('/api/clientes', auth, adminOnly, async (req, res) => {
-  const r = await pool.query('SELECT id,tipo,documento,nome,email,telefone,endereco,plano,valor_plano,cobranca_modo,dia_vencimento,ativo,criado_em FROM clientes ORDER BY criado_em DESC');
-  res.json(r.rows);
+  try {
+    const r = await pool.query('SELECT id,tipo,documento,nome,email,telefone,endereco,plano,valor_plano,cobranca_modo,dia_vencimento,ativo,criado_em FROM clientes ORDER BY criado_em DESC');
+    res.json(r.rows);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 app.post('/api/clientes', auth, adminOnly, async (req, res) => {
@@ -1392,8 +1426,10 @@ app.get('/api/veiculos', auth, async (req, res) => {
     q = 'SELECT v.*,c.nome as cliente_nome,c.plano FROM veiculos v JOIN clientes c ON v.cliente_id=c.id WHERE v.cliente_id=$1 ORDER BY v.criado_em DESC';
     p = [req.user.id];
   }
-  const r = await pool.query(q, p);
-  res.json(r.rows);
+  try {
+    const r = await pool.query(q, p);
+    res.json(r.rows);
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 app.post('/api/veiculos', auth, adminOnly, uploadFoto, async (req, res) => {
@@ -1437,7 +1473,10 @@ app.put('/api/veiculos/:id', auth, uploadFoto, async (req, res) => {
   if (req.user.role !== 'admin' && veiculo.cliente_id !== req.user.id)
     return res.status(403).json({ erro: 'Sem permissão para este veículo' });
 
-  const { bloqueado, modelo, ano, cor, imei } = req.body;
+  const { bloqueado, modelo, ano, cor } = req.body;
+  // IMEI define de qual rastreador físico o veículo recebe posições — só o admin altera.
+  // Sem essa trava, um gestor poderia apontar o próprio veículo para o IMEI de outro cliente.
+  const imei = req.user.role === 'admin' ? req.body.imei : undefined;
   let bloqueadoNovo;
   if (bloqueado !== undefined) {
     bloqueadoNovo = bloqueado === true || bloqueado === 'true';
@@ -2135,14 +2174,16 @@ async function avaliarAlertas(posicoesAtuais) {
 }
 
 app.get('/api/posicoes', auth, async (req, res) => {
-  const result = await getPosicoesEnriquecidas();
-  if (req.user.role === 'admin') return res.json(result);
-  if (req.user.role === 'colaborador') {
-    const g = await pool.query('SELECT veiculo_id FROM grupo_veiculos_itens WHERE grupo_id=$1', [req.user.grupoId]);
-    const allowed = new Set(g.rows.map(r => r.veiculo_id));
-    return res.json(result.filter(r => allowed.has(r.veiculo_id)));
-  }
-  res.json(result.filter(r => r.cliente_id === req.user.id));
+  try {
+    const result = await getPosicoesEnriquecidas();
+    if (req.user.role === 'admin') return res.json(result);
+    if (req.user.role === 'colaborador') {
+      const g = await pool.query('SELECT veiculo_id FROM grupo_veiculos_itens WHERE grupo_id=$1', [req.user.grupoId]);
+      const allowed = new Set(g.rows.map(r => r.veiculo_id));
+      return res.json(result.filter(r => allowed.has(r.veiculo_id)));
+    }
+    res.json(result.filter(r => r.cliente_id === req.user.id));
+  } catch (err) { res.status(500).json({ erro: 'Erro interno' }); }
 });
 
 // Empurra posições via WebSocket pros clientes conectados, no mesmo ritmo do polling do Traccar.
@@ -2254,11 +2295,13 @@ app.delete('/api/compartilhamentos/:id/senha', auth, async (req, res) => {
 const ultimoHistorico = new Map(); // compartilhamento_id -> timestamp do último ponto salvo (throttle)
 app.post('/api/compartilhamentos/:token/location', async (req, res) => {
   const { latitude, longitude, precisao, velocidade, direcao } = req.body;
-  if (!latitude || !longitude) return res.status(400).json({ erro: 'Localização inválida' });
+  const lat = parseFloat(latitude), lon = parseFloat(longitude);
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lon) || lon < -180 || lon > 180)
+    return res.status(400).json({ erro: 'Localização inválida' });
   try {
     const r = await pool.query(
       'UPDATE rastreadores_compartilhados SET latitude=$1, longitude=$2, precisao=$3, velocidade=$4, direcao=$5, ultimo_update=NOW() WHERE token=$6 AND ativo=true RETURNING *',
-      [parseFloat(latitude), parseFloat(longitude), parseFloat(precisao)||0, parseFloat(velocidade)||0, parseFloat(direcao)||0, req.params.token]
+      [lat, lon, parseFloat(precisao)||0, parseFloat(velocidade)||0, parseFloat(direcao)||0, req.params.token]
     );
     if (!r.rows.length) return res.status(404).json({ erro: 'Token não encontrado' });
     const { senha_hash, ...comp } = r.rows[0];
@@ -2269,7 +2312,7 @@ app.post('/api/compartilhamentos/:token/location', async (req, res) => {
       ultimoHistorico.set(id, agora);
       pool.query(
         'INSERT INTO posicoes_historico (compartilhamento_id, latitude, longitude, velocidade) VALUES ($1,$2,$3,$4)',
-        [id, parseFloat(latitude), parseFloat(longitude), parseFloat(velocidade)||0]
+        [id, lat, lon, parseFloat(velocidade)||0]
       ).catch(() => {});
     }
     res.json({ ok: true });
@@ -2877,7 +2920,10 @@ app.post('/api/track/:token/login', rateLimit(10, 60000), async (req, res) => {
 });
 
 app.get('/track/:token', async (req, res) => {
-  const r = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+  let r;
+  try {
+    r = await pool.query('SELECT * FROM rastreadores_compartilhados WHERE token=$1 AND ativo=true', [req.params.token]);
+  } catch (err) { return res.status(500).send('Erro interno'); }
   if (!r.rows.length) return res.status(404).send('Link expirado ou inválido');
   const rastreador = r.rows[0];
   if (rastreador.senha_hash) {
@@ -3331,6 +3377,11 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok', sistema: 'Felogix'
 /* ─── 404 / CATCH ALL ─── */
 app.use((req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ erro: 'Rota não encontrada' });
+  // O SPA detecta o produto por prefixo de URL (startsWith) — não deixar subcaminhos
+  // de produtos indisponíveis abrirem o app (ex.: /fleet/xyz).
+  for (const p of PRODUTOS) {
+    if (p.status !== 'disponivel' && req.path.startsWith('/' + p.slug)) return res.redirect('/produtos/' + p.slug);
+  }
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 

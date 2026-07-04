@@ -979,12 +979,13 @@ async function toggleBlock(id) {
 function applyPosicoes(posicoes) {
   if (Array.isArray(posicoes) && posicoes.length > 0) {
     posicoes.forEach(pos => {
-      const v = VEHICLES.find(v => String(v.imei) === String(pos.id));
+      // pos.id é o deviceId interno do Traccar (não o IMEI); o vínculo correto é veiculo_id
+      const v = VEHICLES.find(v => v.id === pos.veiculo_id);
       if (v) {
         v.lat = pos.lat;
         v.lng = pos.lon;
         v.speed = pos.velocidade || 0;
-        v.status = pos.velocidade > 5 ? 'moving' : 'online';
+        v.status = pos.velocidade > 5 ? 'moving' : 'stopped';
         v.timestamp = pos.timestamp;
         if (currentTab === 'veiculos') {
           const spdEl = document.getElementById('vspd-' + v.id);

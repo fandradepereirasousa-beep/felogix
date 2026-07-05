@@ -1737,7 +1737,13 @@ async function openGeocercaModal(g) {
   try { veiculos = await api('GET','/api/veiculos'); } catch(e) {}
   document.getElementById('mTitle').textContent = g ? 'Editar Geocerca' : 'Nova Geocerca';
   document.getElementById('mBody').innerHTML = `
-    <div class="mf"><label>Nome</label><input id="gcNome" placeholder="Ex: Garagem, Pátio da empresa" value="${g ? g.nome.replace(/"/g,'&quot;') : ''}"/></div>
+    <div class="mf"><label>Nome</label><input id="gcNome" placeholder="Ex: Casa, Trabalho, Pátio da empresa" value="${g ? g.nome.replace(/"/g,'&quot;') : ''}"/>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <div class="act-btn" onclick="document.getElementById('gcNome').value='Casa'">🏠 Casa</div>
+        <div class="act-btn" onclick="document.getElementById('gcNome').value='Trabalho'">💼 Trabalho</div>
+        <div class="act-btn" onclick="document.getElementById('gcNome').value='Escola'">🎒 Escola</div>
+      </div>
+    </div>
     <div class="mf"><label>Aplicar a</label>
       <select id="gcVeiculo">
         <option value="">Toda a frota</option>
@@ -1747,9 +1753,14 @@ async function openGeocercaModal(g) {
     <div class="mf"><label>Raio: <span id="gcRaioLbl">${g ? g.raio_m : 500}</span> m</label>
       <input type="range" id="gcRaio" min="50" max="20000" step="50" value="${g ? g.raio_m : 500}" style="width:100%" oninput="document.getElementById('gcRaioLbl').textContent=this.value; gcAtualizarCirculo();"/>
     </div>
-    <div class="mf"><label>Centro da área (clique no mapa para definir)</label>
+    <div class="mf"><label>Centro da área</label>
+      <button class="mbtn sec" type="button" onclick="gcUsarLocalizacaoAtual()" style="margin-bottom:8px">📍 Usar minha localização atual</button>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <input id="gcEndereco" placeholder="Ou digite um endereço…" style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();gcBuscarEndereco();}"/>
+        <button class="act-btn blue" type="button" id="gcBuscarBtn" onclick="gcBuscarEndereco()" style="white-space:nowrap">🔍 Buscar</button>
+      </div>
       <div id="gcMiniMap" style="width:100%;height:200px;border-radius:8px;overflow:hidden;border:1px solid var(--b1)"></div>
-      <div style="font-size:11px;color:var(--t2);margin-top:6px" id="gcCoordLbl">${gcLat!=null ? gcLat.toFixed(5)+', '+gcLon.toFixed(5) : 'Clique no mapa para escolher o centro'}</div>
+      <div style="font-size:11px;color:var(--t2);margin-top:6px" id="gcCoordLbl">${gcLat!=null ? gcLat.toFixed(5)+', '+gcLon.toFixed(5) : 'Use sua localização, busque um endereço ou clique no mapa'}</div>
     </div>
     <button class="mbtn" onclick="saveGeocerca()">Salvar Geocerca</button>`;
   openModal();
@@ -1757,6 +1768,7 @@ async function openGeocercaModal(g) {
 }
 
 function gcInitMiniMap() {
+  if (typeof L === 'undefined') return; // Leaflet não carregou (CDN offline) — coords via GPS/endereço continuam funcionando
   if (gcMiniMap) { gcMiniMap.remove(); gcMiniMap = null; gcMiniMarker = null; gcMiniCircle = null; }
   const el = document.getElementById('gcMiniMap');
   if (!el) return;
@@ -1770,6 +1782,45 @@ function gcInitMiniMap() {
   });
   if (gcLat != null) gcAtualizarCirculo();
   setTimeout(() => gcMiniMap && gcMiniMap.invalidateSize(), 150);
+}
+
+function gcDefinirCentro(lat, lon, zoom) {
+  gcLat = lat; gcLon = lon;
+  const lbl = document.getElementById('gcCoordLbl');
+  if (lbl) lbl.textContent = lat.toFixed(5)+', '+lon.toFixed(5);
+  if (!gcMiniMap) gcInitMiniMap();
+  else { gcMiniMap.setView([lat, lon], zoom || 16); gcAtualizarCirculo(); }
+}
+
+function gcUsarLocalizacaoAtual() {
+  if (!navigator.geolocation) return toast('Geolocalização não disponível neste navegador','err');
+  toast('Obtendo localização…','ok');
+  navigator.geolocation.getCurrentPosition(
+    pos => gcDefinirCentro(pos.coords.latitude, pos.coords.longitude, 16),
+    err => toast('Não foi possível obter sua localização: '+err.message,'err'),
+    { enableHighAccuracy:true, timeout:10000 }
+  );
+}
+
+// Busca endereço via Nominatim (OpenStreetMap) — grátis, sem chave de API
+async function gcBuscarEndereco() {
+  const q = document.getElementById('gcEndereco').value.trim();
+  if (!q) return toast('Digite um endereço para buscar','err');
+  const btn = document.getElementById('gcBuscarBtn');
+  btn.textContent = '⏳'; btn.style.pointerEvents = 'none';
+  try {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&accept-language=pt-BR&q=' + encodeURIComponent(q));
+    const resultados = await r.json();
+    if (!Array.isArray(resultados) || !resultados.length) {
+      toast('Endereço não encontrado — tente incluir cidade e estado','err');
+      return;
+    }
+    gcDefinirCentro(parseFloat(resultados[0].lat), parseFloat(resultados[0].lon), 16);
+    const lbl = document.getElementById('gcCoordLbl');
+    if (lbl && resultados[0].display_name) lbl.textContent = '📍 ' + resultados[0].display_name;
+    toast('Endereço localizado 📍','ok');
+  } catch(e) { toast('Falha ao buscar o endereço. Verifique a internet.','err'); }
+  finally { btn.textContent = '🔍 Buscar'; btn.style.pointerEvents = ''; }
 }
 
 function gcAtualizarCirculo() {

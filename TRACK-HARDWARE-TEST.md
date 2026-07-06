@@ -1,9 +1,11 @@
 # TRACK-HARDWARE-TEST.md
 
 **Plano de Validação com Hardware — Felogix Track**
-**Versão:** 1.0 — pós-Sprint 1
-**Dispositivo alvo:** Rastreador GT06 (protocolo GT06N/GT06E na porta 5023/TCP)
+**Versão:** 1.1 — hardware recebido em 06/07
+**Dispositivo alvo:** Rastreador **EC33** (GNSS 4G, protocolo família GT06 na porta 5023/TCP) — IMEI `867689067476640`
 **Ambiente:** VPS de produção com Traccar nativo + PostgreSQL + Node.js (PM2)
+
+> **Comece pelo `ATIVACAO-EC33.md`** — roteiro específico do aparelho recebido (chip, SMS de configuração, bancada, fiação do relé). Este documento é a validação completa que vem depois. Onde este plano diz "GT06", leia "EC33" — o protocolo é o mesmo.
 
 ---
 

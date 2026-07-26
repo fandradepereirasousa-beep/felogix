@@ -23,6 +23,14 @@ on:
         description: 'Email do gestor/cliente dono do veículo'
         required: true
         default: 'fandradepereirasousa@gmail.com'
+      traccar_user:
+        description: 'Usuário admin do Traccar (deixe em branco para usar o TRACCAR_USER do .env)'
+        required: false
+        default: ''
+      traccar_pass:
+        description: 'Senha admin do Traccar (deixe em branco para usar o TRACCAR_PASS do .env)'
+        required: false
+        default: ''
 
 jobs:
   diagnostico:
@@ -34,13 +42,15 @@ jobs:
           IMEI_INPUT: ${{ inputs.imei }}
           NOME_INPUT: ${{ inputs.nome_veiculo }}
           EMAIL_INPUT: ${{ inputs.email_dono }}
+          TRACCAR_USER_INPUT: ${{ inputs.traccar_user }}
+          TRACCAR_PASS_INPUT: ${{ inputs.traccar_pass }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
           script_stop: false
-          envs: IMEI_INPUT,NOME_INPUT,EMAIL_INPUT
+          envs: IMEI_INPUT,NOME_INPUT,EMAIL_INPUT,TRACCAR_USER_INPUT,TRACCAR_PASS_INPUT
           script: |
             IMEI="$IMEI_INPUT"
             NOME_VEICULO="$NOME_INPUT"
@@ -49,17 +59,19 @@ jobs:
 
             cd /var/www/felogix
             if [ -f .env ]; then set -a; . ./.env; set +a; fi
+            TU="${TRACCAR_USER_INPUT:-${TRACCAR_USER:-admin}}"
+            TP="${TRACCAR_PASS_INPUT:-${TRACCAR_PASS:-admin}}"
 
             echo ""
             echo "===== 1) TRACCAR: dispositivo ====="
-            DEVICE_JSON=$(curl -s -u "${TRACCAR_USER:-admin}:${TRACCAR_PASS:-admin}" "http://localhost:8082/api/devices?uniqueId=$IMEI")
+            DEVICE_JSON=$(curl -s -w "\nHTTP_CODE:%{http_code}" -u "$TU:$TP" "http://localhost:8082/api/devices?uniqueId=$IMEI")
             echo "$DEVICE_JSON"
             if echo "$DEVICE_JSON" | grep -q "\"uniqueId\":\"$IMEI\""; then
               echo ">> já existia no Traccar"
               DEVICE_ID=$(echo "$DEVICE_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['id'])" 2>/dev/null || echo "")
             else
               echo ">> cadastrando no Traccar..."
-              CREATE_RESP=$(curl -s -u "${TRACCAR_USER:-admin}:${TRACCAR_PASS:-admin}" -X POST -H "Content-Type: application/json" -d "{\"name\":\"$NOME_VEICULO\",\"uniqueId\":\"$IMEI\"}" http://localhost:8082/api/devices)
+              CREATE_RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -u "$TU:$TP" -X POST -H "Content-Type: application/json" -d "{\"name\":\"$NOME_VEICULO\",\"uniqueId\":\"$IMEI\"}" http://localhost:8082/api/devices)
               echo "$CREATE_RESP"
               DEVICE_ID=$(echo "$CREATE_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "")
             fi
@@ -68,7 +80,7 @@ jobs:
             echo ""
             echo "===== 2) TRACCAR: última posição conhecida (se houver) ====="
             if [ -n "$DEVICE_ID" ]; then
-              curl -s -u "${TRACCAR_USER:-admin}:${TRACCAR_PASS:-admin}" "http://localhost:8082/api/positions?deviceId=$DEVICE_ID"
+              curl -s -u "$TU:$TP" "http://localhost:8082/api/positions?deviceId=$DEVICE_ID"
             else
               echo "(sem deviceId ainda)"
             fi
@@ -118,7 +130,7 @@ jobs:
             else
               RESP=$(curl -s -X POST http://localhost:3000/api/veiculos \
                 -H "Authorization: Bearer $TOKEN" \
-                -F "placa=$NOME_VEICULO" -F "imei=$IMEI" -F "modelo=Rastreador piloto" -F "ano=2024" -F "cor=—" \
+                -F "placa=$NOME_VEICULO" -F "imei=$IMEI" -F "modelo=Rastreador piloto" -F "ano=2024" -F "cor=N/D" \
                 -F "cliente_id=$CLIENTE_ID" -F "tipo=imei")
               echo "$RESP"
             fi

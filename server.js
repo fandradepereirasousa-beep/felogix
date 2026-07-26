@@ -157,9 +157,29 @@ app.use((req, res, next) => {
 /* ─── IDENTIDADE VISUAL FELOGIX — compartilhada por todos os produtos ─── */
 const FAVICON_HREF = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 72 72'%3E%3Crect width='72' height='72' fill='%230C0C0C'/%3E%3Cpolygon points='4,4 20,4 68,68 52,68' fill='%23D91A1A'/%3E%3Cpolygon points='52,4 68,4 20,68 4,68' fill='%23D91A1A'/%3E%3Cpolygon points='36,28 44,36 36,44 28,36' fill='%230C0C0C'/%3E%3C/svg%3E";
 
-function logoSvg(tam) {
-  return `<svg width="${tam}" height="${tam}" viewBox="0 0 72 72" fill="none"><polygon points="4,4 20,4 68,68 52,68" fill="#D91A1A"/><polygon points="52,4 68,4 20,68 4,68" fill="#D91A1A"/><polygon points="36,28 44,36 36,44 28,36" fill="#0C0C0C"/></svg>`;
+// Emblema "F" — traços fluidos, pontas arredondadas, gradiente metálico
+// vermelho. idSuffix evita ids de <linearGradient> duplicados quando o
+// logo aparece mais de uma vez na mesma página (topo + hero).
+function logoSvg(tam, idSuffix = '') {
+  const gid = `flogoGrad${idSuffix}`;
+  return `<svg width="${tam}" height="${tam}" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs><linearGradient id="${gid}" x1="8" y1="8" x2="92" y2="92" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF1744"/><stop offset="1" stop-color="#D32F2F"/>
+    </linearGradient></defs>
+    <rect x="27" y="7" width="17" height="86" rx="8.5" fill="url(#${gid})"/>
+    <path d="M44,7 L79,7 Q94,7 94,20 Q94,33 79,33 L44,33 Z" fill="url(#${gid})"/>
+    <path d="M44,41 L75,41 Q88,41 88,52 Q88,63 75,63 L44,63 Z" fill="url(#${gid})"/>
+  </svg>`;
 }
+
+// Ícones vetoriais minimalistas dos módulos — traço fino (stroke), sem
+// preenchimento, herdam a cor via CSS (currentColor) definida por produto.
+const ICONES = {
+  track: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16 L4.6 11.4 Q5.1 9 7.6 9 H16.4 Q18.9 9 19.4 11.4 L20 16"/><path d="M2.6 16 H21.4"/><circle cx="7" cy="17.6" r="1.7"/><circle cx="17" cy="17.6" r="1.7"/></svg>`,
+  fleet: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.6" y="8" width="11" height="8"/><path d="M13.6 11 H17.6 L20.6 14 V16 H13.6 Z"/><circle cx="7" cy="18" r="1.7"/><circle cx="17.2" cy="18" r="1.7"/></svg>`,
+  connect: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.5-6-6.5-11A6.5 6.5 0 0 1 18.5 10c0 5-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.2"/></svg>`,
+  patrol: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 5-3.5 7.8-7 9-3.5-1.2-7-4-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>`,
+};
 
 // CSS comum a todas as páginas públicas (seletora + páginas de produto) —
 // garante mesmo layout/tipografia em todo o ecossistema (cor de destaque é
@@ -170,7 +190,7 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#0C0C0C; color:#fff; 
 .topo { display:flex; align-items:center; justify-content:space-between; padding:18px 32px; border-bottom:1px solid #1f1f1f; flex-wrap:wrap; gap:14px; }
 .topo-logo { display:flex; align-items:center; gap:8px; text-decoration:none; color:#fff; }
 .topo-logo svg { flex-shrink:0; }
-.topo-logo-text { font-weight:900; font-size:18px; letter-spacing:-.3px; line-height:1; white-space:nowrap; }
+.topo-logo-text { font-weight:800; font-size:18px; letter-spacing:.5px; line-height:1; white-space:nowrap; color:#F0F0F0; }
 .topo-nav { display:flex; gap:22px; flex-wrap:wrap; }
 .topo-nav a { color:#9a9a9a; text-decoration:none; font-size:13px; font-weight:600; padding:6px 2px; border-bottom:2px solid transparent; }
 .topo-nav a:hover { color:#fff; }
@@ -187,7 +207,6 @@ const PRODUTOS = [
     slug: 'track',
     nome: 'Felogix Track',
     tagline: 'Rastreamento veicular em tempo real',
-    icone: '🚗',
     cor: '#D91A1A',
     status: 'disponivel',
     appHref: '/track',
@@ -210,7 +229,6 @@ const PRODUTOS = [
     slug: 'fleet',
     nome: 'Felogix Fleet',
     tagline: 'Gestão completa de frotas',
-    icone: '🚚',
     cor: '#2D6CDF',
     status: 'em_breve',
     appHref: '/fleet',
@@ -233,7 +251,6 @@ const PRODUTOS = [
     slug: 'connect',
     nome: 'Felogix Connect',
     tagline: 'Localização compartilhada entre pessoas e equipes',
-    icone: '📍',
     cor: '#1FAE6B',
     status: 'em_breve',
     appHref: '/connect',
@@ -256,7 +273,6 @@ const PRODUTOS = [
     slug: 'patrol',
     nome: 'Felogix Patrol',
     tagline: 'Rondas, checklists e auditoria de segurança patrimonial',
-    icone: '🛡️',
     cor: '#6B21D9',
     status: 'em_breve',
     appHref: '/patrol',
@@ -283,7 +299,7 @@ function navProdutos(slugAtual) {
 
 function topoFelogix(slugAtual) {
   return `<header class="topo">
-    <a href="/" class="topo-logo">${logoSvg(28)}<span class="topo-logo-text">FEL<span style="color:#D91A1A">O</span>GIX</span></a>
+    <a href="/" class="topo-logo">${logoSvg(28, 'T')}<span class="topo-logo-text">FELOGIX</span></a>
     <nav class="topo-nav">${navProdutos(slugAtual)}</nav>
   </header>`;
 }
@@ -301,42 +317,47 @@ function paginaSeletora() {
   <style>
     ${CSS_BASE}
     body { display:flex; flex-direction:column; }
-    .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:clamp(12px,3.5vh,36px) 20px clamp(8px,2vh,18px); }
-    .hero .logo-grande svg { width:clamp(26px,7vw,46px); height:clamp(26px,7vw,46px); }
-    .hero .logo-grande { margin-bottom:clamp(6px,1.5vh,12px); }
+    .hero { display:flex; flex-direction:column; align-items:center; text-align:center; padding:clamp(28px,7vh,64px) 20px clamp(10px,2.2vh,20px); }
+    .hero .logo-grande { position:relative; margin-bottom:clamp(10px,2.2vh,18px); }
+    .hero .logo-grande svg { width:clamp(30px,8vw,52px); height:clamp(30px,8vw,52px); position:relative; z-index:1; }
+    .hero .logo-grande::before { content:''; position:absolute; inset:-26px; background:radial-gradient(circle, rgba(255,23,68,.32) 0%, transparent 72%); filter:blur(10px); z-index:0; }
     h1 { font-size:clamp(17px,4vw,24px); font-weight:700; max-width:560px; line-height:1.25; margin-bottom:6px; }
     .sub { color:#9a9a9a; font-size:clamp(11px,2.6vw,14px); max-width:480px; line-height:1.4; }
     .cta-principal { display:inline-block; margin-top:clamp(10px,2vh,16px); background:#D91A1A; color:#fff; font-weight:700; font-size:clamp(12px,2.8vw,14px); padding:clamp(9px,2vw,12px) clamp(20px,4.5vw,28px); border-radius:8px; text-decoration:none; box-shadow:0 4px 14px rgba(217,26,26,.35); transition:transform .15s,box-shadow .15s; }
     .cta-principal:hover { transform:translateY(-2px); box-shadow:0 6px 18px rgba(217,26,26,.45); }
     .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:clamp(8px,2.2vw,16px); max-width:500px; width:100%; margin:0 auto; padding:0 20px clamp(10px,2vh,22px); flex:1; align-content:center; }
-    .card { background:#141414; border:1px solid #232323; border-top:3px solid #444; border-radius:14px; padding:clamp(11px,2.5vw,20px) clamp(10px,2.5vw,16px); text-decoration:none; color:#fff; transition:border-color .15s,transform .15s,opacity .15s; display:flex; flex-direction:column; align-items:flex-start; }
-    .card:hover { transform:translateY(-3px); }
-    .card.em-breve { opacity:.7; }
+    .card { background:#141414; border:1px solid #232323; border-top:3px solid var(--accent,#444); border-radius:14px; padding:clamp(11px,2.5vw,20px) clamp(10px,2.5vw,16px); color:#fff; cursor:pointer; transition:border-color .18s,transform .18s,box-shadow .18s,opacity .18s; display:flex; flex-direction:column; align-items:flex-start; }
+    .card:hover { transform:translateY(-4px); border-color:#3a3a3a; box-shadow:0 12px 28px -10px var(--accent,#000), 0 4px 14px rgba(0,0,0,.3); }
+    .card.em-breve { opacity:.72; }
     .card.em-breve:hover { opacity:1; }
-    .card-ic { font-size:clamp(20px,5.5vw,28px); margin-bottom:clamp(4px,1vh,10px); }
+    .card-ic { width:clamp(24px,6vw,30px); height:clamp(24px,6vw,30px); color:var(--accent,#fff); margin-bottom:clamp(6px,1.2vh,12px); }
+    .card-ic svg { width:100%; height:100%; }
     .card-t { font-size:clamp(13px,3vw,16px); font-weight:700; margin-bottom:4px; }
     .card-d { font-size:clamp(11px,2.5vw,13px); color:#9a9a9a; line-height:1.4; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .badge { display:inline-block; margin-top:clamp(4px,1vh,10px); font-size:clamp(9px,2vw,11px); font-weight:600; padding:2px 8px; border-radius:20px; background:#222; color:#9a9a9a; }
     .badge.live { background:#1b3a1f; color:#5ed16a; }
-    footer.rodape { padding:6px 20px clamp(6px,1.2vh,14px); flex-shrink:0; }
+    .card-cta { display:inline-block; margin-top:clamp(6px,1.2vh,10px); font-size:clamp(10px,2.2vw,12px); font-weight:600; color:var(--accent,#fff); text-decoration:none; opacity:.85; border-bottom:1px solid transparent; transition:opacity .15s,border-color .15s; }
+    .card-cta:hover { opacity:1; border-bottom-color:var(--accent,#fff); }
+    footer.rodape { padding:6px 20px calc(clamp(10px,2vh,18px) + env(safe-area-inset-bottom, 0px)); flex-shrink:0; }
   </style>
 </head>
 <body>
   ${topoFelogix(null)}
   <section class="hero">
-    <div class="logo-grande">${logoSvg(56)}</div>
+    <div class="logo-grande">${logoSvg(56, 'H')}</div>
     <h1>A tecnologia por trás de cada produto Felogix.</h1>
     <div class="sub">Rastreamento, frotas, localização e segurança — em um único ecossistema.</div>
     <a href="mailto:felogix.br@gmail.com?subject=Quero%20conhecer%20a%20Felogix" class="cta-principal">Falar com um Especialista</a>
   </section>
   <div class="grid">
     ${PRODUTOS.map(p => `
-    <a class="card${p.status === 'disponivel' ? '' : ' em-breve'}" style="border-top-color:${p.cor}" href="/produtos/${p.slug}">
-      <div class="card-ic">${p.icone}</div>
+    <div class="card${p.status === 'disponivel' ? '' : ' em-breve'}" style="--accent:${p.cor}" onclick="location.href='/produtos/${p.slug}'">
+      <div class="card-ic">${ICONES[p.slug]}</div>
       <div class="card-t">${p.nome}</div>
       <div class="card-d">${p.tagline}</div>
       <span class="badge ${p.status === 'disponivel' ? 'live' : ''}">${p.status === 'disponivel' ? 'Disponível' : 'Em breve'}</span>
-    </a>`).join('')}
+      ${p.status === 'disponivel' ? '' : `<a class="card-cta" href="mailto:felogix.br@gmail.com?subject=${encodeURIComponent('Quero conhecer o ' + p.nome)}" onclick="event.stopPropagation()">Me avise do lançamento →</a>`}
+    </div>`).join('')}
   </div>
   <footer class="rodape">Felogix © ${new Date().getFullYear()}</footer>
 </body>
@@ -386,7 +407,8 @@ function paginaProduto(produto) {
     ${CSS_BASE}
     main { max-width:720px; margin:0 auto; padding:64px 24px 40px; }
     .tag { display:inline-block; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:${produto.cor}; margin-bottom:18px; }
-    .hero-ic { font-size:44px; margin-bottom:18px; }
+    .hero-ic { width:40px; height:40px; color:${produto.cor}; margin-bottom:18px; }
+    .hero-ic svg { width:100%; height:100%; }
     h1 { font-size:30px; font-weight:800; margin-bottom:8px; letter-spacing:-.5px; }
     .tagline { font-size:16px; color:#bbb; margin-bottom:18px; }
     .descricao { font-size:15px; color:#9a9a9a; line-height:1.6; max-width:600px; margin-bottom:40px; }
@@ -405,7 +427,7 @@ function paginaProduto(produto) {
 <body>
   ${topoFelogix(produto.slug)}
   <main>
-    <div class="hero-ic">${produto.icone}</div>
+    <div class="hero-ic">${ICONES[produto.slug]}</div>
     <span class="tag">Felogix ${nomeCurto}</span>
     <h1>${produto.nome}</h1>
     <div class="tagline">${produto.tagline}</div>

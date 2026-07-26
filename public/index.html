@@ -101,11 +101,16 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
 .leaflet-control-attribution a{color:rgba(255,255,255,.65)!important;}
 .map-sb{position:absolute;top:0;right:0;bottom:0;width:260px;max-width:78vw;background:rgba(12,12,12,.97);border-left:1px solid var(--b1);backdrop-filter:blur(12px);z-index:100;transform:translateX(100%);transition:transform .28s ease;display:flex;flex-direction:column;}
 .map-sb.open{transform:translateX(0);}
+.msb-peek{display:none;}
 @media (max-width:680px){
-  .map-sb{top:auto;left:0;right:0;bottom:0;width:100%;max-width:100%;height:44vh;border-left:none;border-top:1px solid var(--b1);border-radius:16px 16px 0 0;transform:translateY(100%);}
+  .map-sb{top:auto;left:0;right:0;bottom:0;width:100%;max-width:100%;height:44vh;border-left:none;border-top:1px solid var(--b1);border-radius:16px 16px 0 0;transform:translateY(calc(100% - 56px));}
   .map-sb.open{transform:translateY(0);}
   .map-sb.open ~ .map-fabs{bottom:calc(44vh + 12px);}
+  .msb-peek{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;height:56px;flex-shrink:0;cursor:pointer;}
+  .map-sb.open .msb-peek{display:none;}
 }
+.msb-peek-handle{width:36px;height:4px;background:var(--b2);border-radius:2px;}
+.msb-peek-text{font-size:11px;color:var(--t1);font-weight:600;}
 .msb-head{padding:10px 12px;border-bottom:1px solid var(--b1);position:relative;}
 .msb-close{position:absolute;top:8px;right:10px;width:26px;height:26px;border-radius:7px;background:var(--s2);border:1px solid var(--b1);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;color:var(--t2);}
 .msb-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px;}
@@ -574,10 +579,14 @@ function renderMapa(c) {
     loadMapData();
     return;
   }
-  mapSbOpen = true;
+  mapSbOpen = false;
   c.innerHTML = `<div id="mapWrap" style="width:100%;height:100%;position:relative;">
     <div id="map"></div>
     <div class="map-sb${mapSbOpen ? ' open' : ''}" id="mapSb">
+      <div class="msb-peek" onclick="toggleMapSb()">
+        <div class="msb-peek-handle"></div>
+        <div class="msb-peek-text">🚗 <span id="msbPeekCount">0</span> veículos — toque para ver a lista</div>
+      </div>
       <div class="msb-head" id="mapSbHead">
         <div class="msb-close" onclick="toggleMapSb()">✕</div>
         <div class="msb-stats">
@@ -661,6 +670,8 @@ function fmtLastSeen(ts) {
 function updateMapList() {
   const el = document.getElementById('mapList'); if (!el) return;
   const allItems = VEHICLES.length + COMPARTILHAMENTOS.length;
+  const peekCount = document.getElementById('msbPeekCount');
+  if (peekCount) peekCount.textContent = allItems;
   if (!allItems) { el.innerHTML = `<div class="empty"><div class="ei">🚗</div><div class="et">Nada para rastrear ainda</div><div class="es">Veículos e celulares aparecerão aqui quando cadastrados</div></div>`; return; }
   document.getElementById('sbOnline').textContent  = VEHICLES.filter(v => v.status !== 'offline').length + COMPARTILHAMENTOS.filter(isPersonOnline).length;
   document.getElementById('sbMoving').textContent  = VEHICLES.filter(v => v.status === 'moving').length;

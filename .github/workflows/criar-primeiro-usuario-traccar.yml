@@ -1,0 +1,62 @@
+name: Criar primeiro usuário admin do Traccar
+
+# Disparo manual. O Traccar permite criar a PRIMEIRA conta via API sem
+# autenticação quando a tabela de usuários está vazia (fluxo de bootstrap
+# oficial — ver org.traccar.helper.model.UserUtil.isEmpty()). Essa conta
+# nasce automaticamente como administrator=true.
+on:
+  workflow_dispatch:
+    inputs:
+      nome:
+        description: 'Nome do usuário'
+        required: true
+        default: 'Felipe Andrade'
+      email:
+        description: 'Email de login'
+        required: true
+      senha:
+        description: 'Senha (texto puro — o Traccar faz o hash sozinho)'
+        required: true
+
+jobs:
+  criar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Criar usuário via API do Traccar
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          NOME_INPUT: ${{ inputs.nome }}
+          EMAIL_INPUT: ${{ inputs.email }}
+          SENHA_INPUT: ${{ inputs.senha }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: false
+          envs: NOME_INPUT,EMAIL_INPUT,SENHA_INPUT
+          script: |
+            NOME="$NOME_INPUT"
+            EMAIL="$EMAIL_INPUT"
+            SENHA="$SENHA_INPUT"
+
+            echo "===== 1) Confirmando que não há usuários (somente leitura) ====="
+            curl -s http://localhost:8082/api/users
+            echo ""
+
+            echo ""
+            echo "===== 2) Criando primeiro usuário via POST /api/users (bootstrap sem auth) ====="
+            RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST http://localhost:8082/api/users \
+              -H "Content-Type: application/json" \
+              -d "{\"name\":\"$NOME\",\"email\":\"$EMAIL\",\"password\":\"$SENHA\"}")
+            echo "$RESP"
+
+            echo ""
+            echo "===== 3) Testando login com a conta criada ====="
+            LOGIN_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$EMAIL:$SENHA" http://localhost:8082/api/devices)
+            echo "HTTP login: $LOGIN_CODE"
+            if [ "$LOGIN_CODE" = "200" ]; then
+              echo "✅ CONTA CRIADA E LOGIN FUNCIONANDO."
+            else
+              echo "❌ Login falhou após criação — HTTP $LOGIN_CODE."
+            fi

@@ -133,6 +133,11 @@ jobs:
                 -F "placa=$NOME_VEICULO" -F "imei=$IMEI" -F "modelo=Rastreador piloto" -F "ano=2024" -F "cor=N/D" \
                 -F "cliente_id=$CLIENTE_ID" -F "tipo=imei")
               echo "$RESP"
+              if echo "$RESP" | grep -q "Erro interno"; then
+                echo ""
+                echo "===== 7b) PM2 LOG: causa real do erro (últimas linhas) ====="
+                pm2 logs felogix-server --lines 25 --nostream 2>/dev/null || pm2 logs felogix --lines 25 --nostream 2>/dev/null || echo "(não achei o processo pm2 'felogix-server' nem 'felogix')"
+              fi
             fi
 
             echo ""

@@ -101,14 +101,7 @@ jobs:
             echo ""
             echo "===== 6) FELOGIX: localizando cliente $EMAIL_DONO ====="
             CLIENTES=$(curl -s http://localhost:3000/api/clientes -H "Authorization: Bearer $TOKEN")
-            CLIENTE_ID=$(echo "$CLIENTES" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-alvo = '$EMAIL_DONO'
-for c in data:
-    if c.get('email') == alvo:
-        print(c['id']); break
-" 2>/dev/null || echo "")
+            CLIENTE_ID=$(echo "$CLIENTES" | python3 -c "import sys,json; data=json.load(sys.stdin); alvo='$EMAIL_DONO'; print(next((str(c['id']) for c in data if c.get('email')==alvo), ''))" 2>/dev/null || echo "")
             echo "cliente_id: $CLIENTE_ID"
             if [ -z "$CLIENTE_ID" ]; then
               echo "Cliente não encontrado com esse email — abortando cadastro do veículo"
@@ -118,14 +111,7 @@ for c in data:
             echo ""
             echo "===== 7) FELOGIX: veículo (idempotente) ====="
             VEICULOS=$(curl -s http://localhost:3000/api/veiculos -H "Authorization: Bearer $TOKEN")
-            JA_EXISTE=$(echo "$VEICULOS" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-alvo = '$IMEI'
-for v in data:
-    if v.get('imei') == alvo:
-        print(v['id']); break
-" 2>/dev/null || echo "")
+            JA_EXISTE=$(echo "$VEICULOS" | python3 -c "import sys,json; data=json.load(sys.stdin); alvo='$IMEI'; print(next((str(v['id']) for v in data if v.get('imei')==alvo), ''))" 2>/dev/null || echo "")
 
             if [ -n "$JA_EXISTE" ]; then
               echo "Veículo já cadastrado, id=$JA_EXISTE"

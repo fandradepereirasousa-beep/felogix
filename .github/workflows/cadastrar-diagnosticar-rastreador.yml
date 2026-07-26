@@ -63,6 +63,12 @@ jobs:
             TP="${TRACCAR_PASS_INPUT:-${TRACCAR_PASS:-admin}}"
 
             echo ""
+            echo "===== 0) TRACCAR: config de banco + credenciais originais no log de boot (somente leitura) ====="
+            grep -E "database\.(driver|url)" /opt/traccar/conf/traccar.xml 2>/dev/null || echo "(traccar.xml não encontrado no caminho padrão)"
+            journalctl -u traccar --no-pager 2>/dev/null | grep -iE "administrator|default.*password|created.*user" | head -20
+            echo "(se vazio acima: log de boot original não está mais disponível — normal se o Traccar já reiniciou muitas vezes)"
+
+            echo ""
             echo "===== 1) TRACCAR: dispositivo ====="
             DEVICE_JSON=$(curl -s -w "\nHTTP_CODE:%{http_code}" -u "$TU:$TP" "http://localhost:8082/api/devices?uniqueId=$IMEI")
             echo "$DEVICE_JSON"

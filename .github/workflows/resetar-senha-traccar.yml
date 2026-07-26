@@ -1,0 +1,107 @@
+name: Resetar senha admin do Traccar (H2)
+
+# Disparo manual. Troca a senha da conta admin do Traccar diretamente no
+# banco H2 embutido, usando o MESMO algoritmo que o Traccar 6.3 usa para
+# validar login (PBKDF2WithHmacSHA1, 1000 iterações, salt/hash de 24 bytes
+# — confirmado na fonte oficial org.traccar.helper.Hashing). O hash e o
+# salt já vêm PRÉ-CALCULADOS como input (não geramos senha aqui).
+#
+# Não apaga nem recria a conta — só atualiza hashedpassword/salt da(s)
+# conta(s) marcadas como administrator=true. Traccar fica parado por
+# poucos segundos (trap garante reinício mesmo se algo falhar no meio).
+on:
+  workflow_dispatch:
+    inputs:
+      hash_hex:
+        description: 'Hash da nova senha em hex (48 chars = 24 bytes), calculado com PBKDF2WithHmacSHA1'
+        required: true
+      salt_hex:
+        description: 'Salt usado para gerar o hash acima, em hex (48 chars = 24 bytes)'
+        required: true
+      senha_teste:
+        description: 'A senha em texto puro correspondente ao hash acima, só para validar o login no final (nunca é salva em lugar nenhum)'
+        required: true
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trocar credencial no H2 e validar login
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          HASH_INPUT: ${{ inputs.hash_hex }}
+          SALT_INPUT: ${{ inputs.salt_hex }}
+          SENHA_TESTE_INPUT: ${{ inputs.senha_teste }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: false
+          envs: HASH_INPUT,SALT_INPUT,SENHA_TESTE_INPUT
+          script: |
+            HASH_HEX="$HASH_INPUT"
+            SALT_HEX="$SALT_INPUT"
+            SENHA_TESTE="$SENHA_TESTE_INPUT"
+
+            echo "===== 1) Config de conexão do banco (somente leitura) ====="
+            grep -E "database\.(driver|url|user|password)" /opt/traccar/conf/traccar.xml 2>/dev/null || echo "(sem entradas explícitas — usando defaults do H2 embutido)"
+
+            DB_FILE=$(find /opt/traccar -iname "database.mv.db" 2>/dev/null | head -1)
+            if [ -z "$DB_FILE" ]; then echo "ERRO: arquivo do banco H2 não encontrado"; exit 1; fi
+            DB_PATH="${DB_FILE%.mv.db}"
+            echo "Banco encontrado em: $DB_PATH"
+
+            H2_JAR=$(find / -maxdepth 6 -iname "h2-*.jar" 2>/dev/null | head -1)
+            CP="/opt/traccar/tracker-server.jar"
+            [ -n "$H2_JAR" ] && CP="$CP:$H2_JAR"
+            echo "Classpath H2: $CP"
+
+            echo ""
+            echo "===== 2) Parando Traccar (reinício garantido ao final, mesmo se algo falhar) ====="
+            trap 'echo "--- trap: religando traccar ---"; systemctl start traccar' EXIT
+            systemctl stop traccar
+            sleep 2
+
+            echo ""
+            echo "===== 3) Localizando conta(s) administrator=true (somente leitura) ====="
+            java -cp "$CP" org.h2.tools.Shell -url "jdbc:h2:$DB_PATH" -user sa -password "" \
+              -sql "SELECT id, email, administrator FROM tc_users;" 2>&1
+
+            ADMIN_EMAIL=$(java -cp "$CP" org.h2.tools.Shell -url "jdbc:h2:$DB_PATH" -user sa -password "" \
+              -sql "SELECT email FROM tc_users WHERE administrator=true;" 2>/dev/null \
+              | grep -Ei '@' | head -1 | tr -d '[:space:]')
+            echo "Email admin identificado: $ADMIN_EMAIL"
+
+            echo ""
+            echo "===== 4) Atualizando credencial (UPDATE — só hashedpassword/salt, nada mais) ====="
+            java -cp "$CP" org.h2.tools.Shell -url "jdbc:h2:$DB_PATH" -user sa -password "" \
+              -sql "UPDATE tc_users SET hashedpassword='$HASH_HEX', salt='$SALT_HEX' WHERE administrator=true;" 2>&1
+
+            echo ""
+            echo "===== 5) Religando Traccar ====="
+            systemctl start traccar
+            trap - EXIT
+            sleep 5
+
+            echo ""
+            echo "===== 6) Verificando serviço + testando login com a senha nova ====="
+            systemctl is-active traccar
+            for i in 1 2 3 4 5; do
+              CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8082/api/server)
+              [ "$CODE" = "200" ] && break
+              sleep 2
+            done
+            echo "HTTP /api/server: $CODE"
+
+            if [ -n "$ADMIN_EMAIL" ]; then
+              LOGIN_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$ADMIN_EMAIL:$SENHA_TESTE" http://localhost:8082/api/devices)
+              echo "HTTP login com a senha nova ($ADMIN_EMAIL): $LOGIN_CODE"
+              if [ "$LOGIN_CODE" = "200" ]; then
+                echo "✅ SENHA NOVA FUNCIONANDO — login confirmado."
+              else
+                echo "❌ Login falhou com a senha nova — HTTP $LOGIN_CODE. Verificar acima se o UPDATE afetou alguma linha."
+              fi
+            else
+              echo "⚠️ Não consegui identificar o email do admin — confirme manualmente com o SELECT acima."
+            fi

@@ -968,6 +968,13 @@ async function initDB() {
   try {
     await pool.query(`ALTER TABLE rastreadores_compartilhados ADD COLUMN IF NOT EXISTS telefone VARCHAR(20)`);
   } catch (e) { console.warn('Migração rastreadores_compartilhados telefone:', e.message); }
+  // CRÍTICO: 'imei' só existia no CREATE TABLE IF NOT EXISTS original — em bancos
+  // criados antes dessa coluna entrar no schema (produção), o CREATE TABLE nunca
+  // roda de novo e a coluna nunca é adicionada. Sem isso, TODO cadastro de veículo
+  // com IMEI (tipo='imei') falha com "column imei does not exist" (42703).
+  try {
+    await pool.query(`ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS imei VARCHAR(20)`);
+  } catch (e) { console.warn('Migração veiculos imei:', e.message); }
   try {
     await pool.query(`ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS foto VARCHAR(255)`);
   } catch (e) { console.warn('Migração veiculos foto:', e.message); }

@@ -1,0 +1,146 @@
+name: Cadastrar rastreador e diagnosticar conexão
+
+# Disparo manual. Dado um IMEI, cadastra o dispositivo no Traccar e o
+# veículo no Felogix (idempotente — não duplica se já existir) e mostra,
+# direto do log do servidor, se o rastreador já chegou a conectar no
+# listener GT06 (5023/tcp) — mais confiável que ler STATUS# por SMS no
+# próprio aparelho, que só reflete o que ELE acha que está acontecendo.
+#
+# NÃO configura o rastreador em si (APN/SERVER) — isso só é possível por
+# SMS enviado de um celular para o chip, fora do alcance deste workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      imei:
+        description: 'IMEI do rastreador'
+        required: true
+        default: '867689067476640'
+      nome_veiculo:
+        description: 'Placa/nome do veículo no Felogix'
+        required: true
+        default: 'MOTO-EC33'
+      email_dono:
+        description: 'Email do gestor/cliente dono do veículo'
+        required: true
+        default: 'fandradepereirasousa@gmail.com'
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cadastrar (Traccar + Felogix) e checar conexão nos logs
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          IMEI_INPUT: ${{ inputs.imei }}
+          NOME_INPUT: ${{ inputs.nome_veiculo }}
+          EMAIL_INPUT: ${{ inputs.email_dono }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: false
+          envs: IMEI_INPUT,NOME_INPUT,EMAIL_INPUT
+          script: |
+            IMEI="$IMEI_INPUT"
+            NOME_VEICULO="$NOME_INPUT"
+            EMAIL_DONO="$EMAIL_INPUT"
+            echo "IMEI alvo: $IMEI | Veículo: $NOME_VEICULO | Dono: $EMAIL_DONO"
+
+            cd /var/www/felogix
+            if [ -f .env ]; then set -a; . ./.env; set +a; fi
+
+            echo ""
+            echo "===== 1) TRACCAR: dispositivo ====="
+            DEVICE_JSON=$(curl -s -u "${TRACCAR_USER:-admin}:${TRACCAR_PASS:-admin}" "http://localhost:8082/api/devices?uniqueId=$IMEI")
+            echo "$DEVICE_JSON"
+            if echo "$DEVICE_JSON" | grep -q "\"uniqueId\":\"$IMEI\""; then
+              echo ">> já existia no Traccar"
+              DEVICE_ID=$(echo "$DEVICE_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['id'])" 2>/dev/null || echo "")
+            else
+              echo ">> cadastrando no Traccar..."
+              CREATE_RESP=$(curl -s -u "${TRACCAR_USER:-admin}:${TRACCAR_PASS:-admin}" -X POST -H "Content-Type: application/json" -d "{\"name\":\"$NOME_VEICULO\",\"uniqueId\":\"$IMEI\"}" http://localhost:8082/api/devices)
+              echo "$CREATE_RESP"
+              DEVICE_ID=$(echo "$CREATE_RESP" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "")
+            fi
+            echo "Traccar deviceId: $DEVICE_ID"
+
+            echo ""
+            echo "===== 2) TRACCAR: última posição conhecida (se houver) ====="
+            if [ -n "$DEVICE_ID" ]; then
+              curl -s -u "${TRACCAR_USER:-admin}:${TRACCAR_PASS:-admin}" "http://localhost:8082/api/positions?deviceId=$DEVICE_ID"
+            else
+              echo "(sem deviceId ainda)"
+            fi
+
+            echo ""
+            echo "===== 3) TRACCAR LOG: menções ao IMEI ====="
+            if grep -i "$IMEI" /opt/traccar/logs/tracker-server.log > /tmp/log_imei.txt 2>/dev/null && [ -s /tmp/log_imei.txt ]; then
+              tail -n 40 /tmp/log_imei.txt
+            else
+              echo "(nenhuma linha com esse IMEI no log ainda — aparelho nunca completou o handshake no Traccar)"
+            fi
+
+            echo ""
+            echo "===== 4) TRACCAR LOG: atividade recente na porta 5023 / protocolo gt06 (últimas 30 linhas) ====="
+            if grep -Ei "5023|gt06" /opt/traccar/logs/tracker-server.log > /tmp/log_gt06.txt 2>/dev/null && [ -s /tmp/log_gt06.txt ]; then
+              tail -n 30 /tmp/log_gt06.txt
+            else
+              echo "(nada)"
+            fi
+
+            echo ""
+            echo "===== 5) FELOGIX: login admin ====="
+            TOKEN=$(curl -s -X POST http://localhost:3000/api/login -H "Content-Type: application/json" -d "{\"email\":\"felipe.sousa@felogix.com.br\",\"senha\":\"$ADMIN_PASS\"}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+            if [ -z "$TOKEN" ]; then
+              echo "FALHA no login admin — abortando cadastro no Felogix (Traccar/logs acima já são válidos)"
+              exit 0
+            fi
+            echo "login OK"
+
+            echo ""
+            echo "===== 6) FELOGIX: localizando cliente $EMAIL_DONO ====="
+            CLIENTES=$(curl -s http://localhost:3000/api/clientes -H "Authorization: Bearer $TOKEN")
+            CLIENTE_ID=$(echo "$CLIENTES" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+alvo = '$EMAIL_DONO'
+for c in data:
+    if c.get('email') == alvo:
+        print(c['id']); break
+" 2>/dev/null || echo "")
+            echo "cliente_id: $CLIENTE_ID"
+            if [ -z "$CLIENTE_ID" ]; then
+              echo "Cliente não encontrado com esse email — abortando cadastro do veículo"
+              exit 0
+            fi
+
+            echo ""
+            echo "===== 7) FELOGIX: veículo (idempotente) ====="
+            VEICULOS=$(curl -s http://localhost:3000/api/veiculos -H "Authorization: Bearer $TOKEN")
+            JA_EXISTE=$(echo "$VEICULOS" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+alvo = '$IMEI'
+for v in data:
+    if v.get('imei') == alvo:
+        print(v['id']); break
+" 2>/dev/null || echo "")
+
+            if [ -n "$JA_EXISTE" ]; then
+              echo "Veículo já cadastrado, id=$JA_EXISTE"
+            else
+              RESP=$(curl -s -X POST http://localhost:3000/api/veiculos \
+                -H "Authorization: Bearer $TOKEN" \
+                -F "placa=$NOME_VEICULO" -F "imei=$IMEI" -F "modelo=Rastreador piloto" -F "ano=2024" -F "cor=—" \
+                -F "cliente_id=$CLIENTE_ID" -F "tipo=imei")
+              echo "$RESP"
+            fi
+
+            echo ""
+            echo "===== RESUMO ====="
+            echo "Traccar deviceId: ${DEVICE_ID:-N/A}"
+            echo "Felogix cliente_id: $CLIENTE_ID"
+            echo "Se a seção 3/4 vieram vazias: o rastreador AINDA NÃO conectou ao servidor."
+            echo "Felogix e Traccar já estão prontos para recebê-lo — falta a configuração"
+            echo "de rede do próprio aparelho (APN/SERVER via SMS), que só é possível por SMS."

@@ -91,7 +91,6 @@ html,body{height:100%;overflow:hidden;font-family:'Inter',sans-serif;background:
 /* MAP */
 #mapWrap{width:100%;height:100%;position:relative;}
 #map{width:100%;height:100%;touch-action:none;}
-.leaflet-tile-pane{filter:brightness(.75) saturate(.5) contrast(1.1);}
 .leaflet-container{background:var(--bg);}
 .leaflet-control-zoom a{background:rgba(12,12,12,.88)!important;color:#fff!important;border-color:var(--b1)!important;}
 .leaflet-control-attribution{background:rgba(0,0,0,.45)!important;color:rgba(255,255,255,.55)!important;font-size:8px!important;}
@@ -722,7 +721,7 @@ function addTileLayer() {
   if (tileLayer && map) { try { map.removeLayer(tileLayer); } catch(e) {} }
   hideMapTileError();
   let ok = 0;
-  tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'© OpenStreetMap'});
+  tileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {maxZoom:20, subdomains:'abcd', attribution:'© OpenStreetMap contributors © CARTO'});
   tileLayer.on('tileload', () => { ok++; hideMapTileError(); });
   tileLayer.addTo(map);
   setTimeout(() => { if (ok === 0) showMapTileError(); }, 7000);
@@ -1774,7 +1773,7 @@ function gcInitMiniMap() {
   if (!el) return;
   const center = gcLat != null ? [gcLat, gcLon] : (VEHICLES[0] ? [VEHICLES[0].lat, VEHICLES[0].lon] : [-23.549, -46.638]);
   gcMiniMap = L.map('gcMiniMap', { attributionControl:false }).setView(center, gcLat != null ? 15 : 12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(gcMiniMap);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 20, subdomains: 'abcd' }).addTo(gcMiniMap);
   gcMiniMap.on('click', e => {
     gcLat = e.latlng.lat; gcLon = e.latlng.lng;
     document.getElementById('gcCoordLbl').textContent = gcLat.toFixed(5)+', '+gcLon.toFixed(5);
@@ -1917,7 +1916,7 @@ function prInitMiniMap() {
   if (!el) return;
   const center = prLat != null ? [prLat, prLon] : [-23.549, -46.638];
   prMiniMap = L.map('prMiniMap', { attributionControl:false }).setView(center, prLat != null ? 16 : 12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(prMiniMap);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 20, subdomains: 'abcd' }).addTo(prMiniMap);
   prMiniMap.on('click', e => {
     prLat = e.latlng.lat; prLon = e.latlng.lng;
     document.getElementById('prCoordLbl').textContent = prLat.toFixed(5)+', '+prLon.toFixed(5);

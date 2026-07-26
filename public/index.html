@@ -569,7 +569,7 @@ function renderMapa(c) {
     loadMapData();
     return;
   }
-  mapSbOpen = window.innerWidth > 680;
+  mapSbOpen = true;
   c.innerHTML = `<div id="mapWrap" style="width:100%;height:100%;position:relative;">
     <div id="map"></div>
     <div class="map-sb${mapSbOpen ? ' open' : ''}" id="mapSb">

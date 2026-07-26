@@ -1,0 +1,47 @@
+name: Verificar listener GT06 do Traccar
+
+# Disparo manual. Diagnóstico 100% somente leitura — não reinicia nada,
+# não altera nada. Confirma se o Traccar está de pé, se a porta 5023/tcp
+# (protocolo GT06) está realmente escutando, se o firewall libera essa
+# porta, e mostra as últimas linhas reais do log do servidor (sem filtro
+# de IMEI/palavra-chave, pra não mascarar nada).
+on:
+  workflow_dispatch:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checar serviço, porta 5023 e log bruto
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script_stop: false
+          script: |
+            echo "===== 1) Serviço traccar ====="
+            systemctl is-active traccar
+            systemctl show traccar -p ActiveEnterTimestamp
+
+            echo ""
+            echo "===== 2) Portas escutando (traccar) ====="
+            ss -tlnp 2>/dev/null | grep -E ":5023|:8082" || echo "(ss sem permissão ou nada encontrado)"
+
+            echo ""
+            echo "===== 3) Firewall (ufw) ====="
+            ufw status 2>/dev/null | grep -E "5023|Status" || echo "(ufw não instalado/ativo ou sem 5023 explícito)"
+
+            echo ""
+            echo "===== 4) Config do Traccar: listeners habilitados ====="
+            grep -iE "gt06|port" /opt/traccar/conf/traccar.xml 2>/dev/null | head -20
+
+            echo ""
+            echo "===== 5) Tamanho e últimas 40 linhas BRUTAS do log (sem filtro) ====="
+            ls -la /opt/traccar/logs/tracker-server.log 2>/dev/null
+            tail -n 40 /opt/traccar/logs/tracker-server.log 2>/dev/null || echo "(log não encontrado)"
+
+            echo ""
+            echo "===== 6) Teste de conexão TCP local na porta 5023 ====="
+            timeout 3 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/5023" && echo "PORTA 5023 ACEITA CONEXÃO TCP LOCAL" || echo "PORTA 5023 NÃO RESPONDEU (serviço não está escutando ou bloqueado)"

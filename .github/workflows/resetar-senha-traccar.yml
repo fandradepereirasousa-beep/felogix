@@ -57,6 +57,19 @@ jobs:
             [ -n "$H2_JAR" ] && CP="$CP:$H2_JAR"
             echo "Classpath H2: $CP"
 
+            JAVA_BIN=$(command -v java 2>/dev/null)
+            if [ -z "$JAVA_BIN" ]; then
+              JAVA_BIN=$(systemctl cat traccar 2>/dev/null | grep -oE '(/[^ ]*bin/java)' | head -1)
+            fi
+            for cand in /opt/traccar/jdk/bin/java /opt/traccar/jre/bin/java /usr/lib/jvm/*/bin/java; do
+              [ -z "$JAVA_BIN" ] && [ -x "$cand" ] && JAVA_BIN="$cand"
+            done
+            if [ -z "$JAVA_BIN" ]; then
+              JAVA_BIN=$(find /opt /usr -maxdepth 6 -type f -iname "java" -perm -u+x 2>/dev/null | head -1)
+            fi
+            if [ -z "$JAVA_BIN" ]; then echo "ERRO: binário java não encontrado em lugar nenhum"; exit 1; fi
+            echo "Java encontrado em: $JAVA_BIN"
+
             echo ""
             echo "===== 2) Parando Traccar (reinício garantido ao final, mesmo se algo falhar) ====="
             trap 'echo "--- trap: religando traccar ---"; systemctl start traccar' EXIT
@@ -65,17 +78,17 @@ jobs:
 
             echo ""
             echo "===== 3) Localizando conta(s) administrator=true (somente leitura) ====="
-            java -cp "$CP" org.h2.tools.Shell -url "jdbc:h2:$DB_PATH" -user sa -password "" \
+            "$JAVA_BIN" -cp "$CP" org.h2.tools.Shell -url "jdbc:h2:$DB_PATH" -user sa -password "" \
               -sql "SELECT id, email, administrator FROM tc_users;" 2>&1
 
-            ADMIN_EMAIL=$(java -cp "$CP" org.h2.tools.Shell -url "jdbc:h2:$DB_PATH" -user sa -password "" \
+            ADMIN_EMAIL=$("$JAVA_BIN" -cp "$CP" org.h2.tools.Shell -url "jdbc:h2:$DB_PATH" -user sa -password "" \
               -sql "SELECT email FROM tc_users WHERE administrator=true;" 2>/dev/null \
               | grep -Ei '@' | head -1 | tr -d '[:space:]')
             echo "Email admin identificado: $ADMIN_EMAIL"
 
             echo ""
             echo "===== 4) Atualizando credencial (UPDATE — só hashedpassword/salt, nada mais) ====="
-            java -cp "$CP" org.h2.tools.Shell -url "jdbc:h2:$DB_PATH" -user sa -password "" \
+            "$JAVA_BIN" -cp "$CP" org.h2.tools.Shell -url "jdbc:h2:$DB_PATH" -user sa -password "" \
               -sql "UPDATE tc_users SET hashedpassword='$HASH_HEX', salt='$SALT_HEX' WHERE administrator=true;" 2>&1
 
             echo ""

@@ -29,7 +29,5 @@ jobs:
           ping -c 3 -W 3 187.127.36.168 || echo "(sem resposta ao ping — normal se ICMP estiver bloqueado no firewall)"
 
           echo ""
-          echo "===== 5) Dono do IP (RDAP) — pra saber qual empresa de hospedagem é ====="
-          curl -sS --max-time 10 "https://rdap.lacnic.net/rdap/ip/187.127.36.168" -o /tmp/rdap.json && cat /tmp/rdap.json | jq -r '"Nome/Org: " + (.name // "?"), "Handle: " + (.handle // "?"), "País: " + (.country // "?")' || echo "(RDAP não respondeu ou não retornou JSON válido)"
-          echo "--- entidades ---"
-          jq -r '.entities[]?.vcardArray[1][]? | select(.[0]=="fn") | .[3]' /tmp/rdap.json 2>/dev/null || true
+          echo "===== 5) Dono do IP (RDAP bruto, pra saber qual empresa de hospedagem é) ====="
+          curl -sSL --max-time 15 -w "\nHTTP_CODE:%{http_code}\n" "https://rdap.lacnic.net/rdap/ip/187.127.36.168"

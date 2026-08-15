@@ -1,0 +1,29 @@
+name: Checar se o site está no ar (sem SSH)
+
+# Disparo manual. Teste 100% via HTTP, direto do runner do GitHub Actions
+# (que tem internet real, ao contrário do sandbox do agente) — não depende
+# de SSH. Serve para descobrir se é só a porta SSH que está bloqueada/fora
+# do ar, ou se o VPS inteiro está inacessível.
+on:
+  workflow_dispatch:
+
+jobs:
+  checar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Testar HTTPS e a porta SSH separadamente
+        run: |
+          echo "===== 1) HTTPS (site) ====="
+          curl -sS -o /dev/null -w "HTTP: %{http_code} | tempo total: %{time_total}s\n" --max-time 15 https://felogix.com.br/ || echo "FALHOU: site não respondeu por HTTPS"
+
+          echo ""
+          echo "===== 2) Porta SSH (22) — só testa se abre conexão TCP, não faz login ====="
+          timeout 10 bash -c "cat < /dev/null > /dev/tcp/187.127.36.168/22" && echo "PORTA 22 ACEITOU CONEXÃO TCP" || echo "PORTA 22 NÃO RESPONDEU (timeout ou recusada)"
+
+          echo ""
+          echo "===== 3) Porta 5023 (GT06) — mesmo teste ====="
+          timeout 10 bash -c "cat < /dev/null > /dev/tcp/187.127.36.168/5023" && echo "PORTA 5023 ACEITOU CONEXÃO TCP" || echo "PORTA 5023 NÃO RESPONDEU (timeout ou recusada)"
+
+          echo ""
+          echo "===== 4) Ping (ICMP pode estar bloqueado por padrão, não é definitivo) ====="
+          ping -c 3 -W 3 187.127.36.168 || echo "(sem resposta ao ping — normal se ICMP estiver bloqueado no firewall)"
